@@ -1,0 +1,85 @@
+<script setup lang="ts">
+import { X, Droplets, Flame, Heart } from 'lucide-vue-next';
+import { useModalA11y } from '../composables/useModalA11y';
+import type { FamilyMember } from '../types';
+
+const props = defineProps<{
+  member: FamilyMember | null;
+}>();
+
+const emit = defineEmits<{
+  (e: 'close'): void;
+  (e: 'sendHeart', name: string): void;
+}>();
+
+useModalA11y(() => props.member !== null, () => emit('close'));
+</script>
+
+<template>
+  <div
+    v-if="member"
+    @click.self="$emit('close')"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="member-detail-title"
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-stone-900/50 backdrop-blur-xs"
+  >
+    <div
+      class="bg-white rounded-t-3xl sm:rounded-3xl p-5 max-w-sm w-full shadow-2xl border border-stone-200 text-stone-800 relative"
+    >
+      <div class="flex items-center justify-between pb-3 border-b border-stone-100">
+        <span id="member-detail-title" class="text-xs font-semibold text-stone-500">家族のプロフィール</span>
+        <button
+          @click="$emit('close')"
+          aria-label="閉じる"
+          class="w-7 h-7 rounded-full bg-stone-100 flex items-center justify-center text-stone-600 hover:bg-stone-200 cursor-pointer"
+        >
+          <X class="w-4 h-4" />
+        </button>
+      </div>
+
+      <div class="pt-4 flex flex-col items-center text-center">
+        <div class="w-16 h-16 rounded-full flex items-center justify-center text-3xl border-2 border-stone-200 shadow-sm mb-2 bg-amber-50">
+          {{ member.avatar }}
+        </div>
+        <h3 class="text-base font-bold text-stone-800">{{ member.name }}</h3>
+        <span class="text-xs text-stone-500">{{ member.role }}</span>
+
+        <!-- Status badge -->
+        <div class="mt-3 flex items-center gap-2">
+          <span
+            class="px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5"
+            :class="member.wateredToday ? 'bg-emerald-100 text-emerald-800' : 'bg-stone-100 text-stone-600'"
+          >
+            <template v-if="member.wateredToday">
+              <Droplets class="w-3.5 h-3.5 fill-emerald-600 text-emerald-600" />
+              <span>本日の水やり完了</span>
+            </template>
+            <template v-else>
+              <span class="w-2 h-2 rounded-full bg-stone-400" />
+              <span>まだ水やりしていません</span>
+            </template>
+          </span>
+
+          <span class="px-2.5 py-1 rounded-full bg-orange-50 border border-orange-200 text-orange-700 text-xs font-semibold flex items-center gap-1">
+            <Flame class="w-3.5 h-3.5 fill-orange-500 text-orange-500" />
+            <span>{{ member.streak }}日</span>
+          </span>
+        </div>
+
+        <p class="mt-4 text-xs text-stone-600 bg-stone-50 p-3 rounded-2xl border border-stone-100 leading-relaxed">
+          GPSや細かなオンライン時間は記録されません。<br />
+          木を一緒に育てているという温かい存在感だけを共有しています。
+        </p>
+
+        <button
+          @click="() => { if (member) { $emit('sendHeart', member.name); $emit('close'); } }"
+          class="mt-4 w-full py-2.5 px-4 rounded-2xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+        >
+          <Heart class="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+          <span>そっとハート（見守りエール）を送る</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
