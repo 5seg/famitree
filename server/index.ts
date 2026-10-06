@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL,
   avatar TEXT NOT NULL, -- 絵文字アバター
   token_hash TEXT NOT NULL UNIQUE,
+  is_admin INTEGER NOT NULL DEFAULT 0, -- 家族の管理者。除名と権限変更ができる
+  removed_at DATETIME, -- 除名済み。行は残して写真や水やりの作者名を保つ
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (family_id) REFERENCES families(id)
 );
@@ -96,7 +98,19 @@ CREATE TABLE IF NOT EXISTS nudges (
 );
 `);
 
-type User = { id: string; family_id: string; name: string; role: string; avatar: string };
+// 既存 DB へのカラム追加（CREATE TABLE IF NOT EXISTS では反映されないため）
+const userCols = db.query<{ name: string }, []>('PRAGMA table_info(users)').all().map((c) => c.name);
+if (!userCols.includes('is_admin')) db.run('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('removed_at')) db.run('ALTER TABLE users ADD COLUMN removed_at DATETIME');
+// 管理者がいない家族（既存データ）は、最初のメンバーを管理者にする
+db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
+  SELECT MIN(u.rowid) FROM users u
+  WHERE u.removed_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM users a WHERE a.family_id = u.family_id AND a.is_admin = 1 AND a.removed_at IS NULL)
+  GROUP BY u.family_id
+)`);
+
+type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number };
 type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string };
 
 class HttpError extends Error {
@@ -161,18 +175,23 @@ function displayDate(createdAtUtc: string, today: string): string {
 }
 
 const q = {
-  userByToken: db.query<User, [string]>('SELECT id, family_id, name, role, avatar FROM users WHERE token_hash = ?'),
+  userByToken: db.query<User, [string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE token_hash = ? AND removed_at IS NULL'),
   family: db.query<Family, [string]>('SELECT * FROM families WHERE id = ?'),
   familyByInvite: db.query<Family, [string]>('SELECT * FROM families WHERE invite_code = ?'),
+  userById: db.query<User, [string, string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE id = ? AND family_id = ? AND removed_at IS NULL'),
+  adminCount: db.query<{ n: number }, [string]>('SELECT COUNT(*) AS n FROM users WHERE family_id = ? AND is_admin = 1 AND removed_at IS NULL'),
+  setAdmin: db.query('UPDATE users SET is_admin = ? WHERE id = ?'),
+  removeUser: db.query('UPDATE users SET removed_at = CURRENT_TIMESTAMP WHERE id = ?'),
+  deleteUserSubs: db.query('DELETE FROM push_subscriptions WHERE user_id = ?'),
   lastFamilyDate: db.query<{ d: string | null }, [string]>('SELECT MAX(watered_date) AS d FROM watering_logs WHERE family_id = ?'),
-  members: db.query<User, [string]>('SELECT id, family_id, name, role, avatar FROM users WHERE family_id = ? ORDER BY created_at, rowid'),
+  members: db.query<User, [string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE family_id = ? AND removed_at IS NULL ORDER BY created_at, rowid'),
   userDates: db.query<{ watered_date: string }, [string]>('SELECT watered_date FROM watering_logs WHERE user_id = ? ORDER BY watered_date DESC'),
   artifacts: db.query<any, [string]>(`
     SELECT a.*, u.name AS author, u.avatar AS author_avatar, u.role AS author_role
     FROM artifacts a JOIN users u ON u.id = a.user_id
     WHERE a.family_id = ? ORDER BY a.created_at DESC, a.rowid DESC LIMIT 20`),
   insertFamily: db.query('INSERT INTO families (id, name, invite_code) VALUES (?, ?, ?)'),
-  insertUser: db.query('INSERT INTO users (id, family_id, name, role, avatar, token_hash) VALUES (?, ?, ?, ?, ?, ?)'),
+  insertUser: db.query('INSERT INTO users (id, family_id, name, role, avatar, token_hash, is_admin) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (id, user_id, family_id, watered_date) VALUES (?, ?, ?, ?)'),
   touchUser: db.query('UPDATE users SET last_watered_at = CURRENT_TIMESTAMP WHERE id = ?'),
   updateTree: db.query('UPDATE families SET tree_level = ?, exp = ?, tree_status = ?, streak_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
@@ -212,6 +231,7 @@ function state(me: User) {
       wateredToday: dates[0] === today,
       streak: streakOf(dates, today),
       isCurrentUser: u.id === me.id,
+      isAdmin: !!u.is_admin,
     };
   });
   const artifacts = q.artifacts.all(family.id).map((a) => ({
@@ -239,7 +259,7 @@ function state(me: User) {
   };
 }
 
-function createUser(familyId: string, body: any) {
+function createUser(familyId: string, body: any, isAdmin = false) {
   const token = newToken();
   q.insertUser.run(
     crypto.randomUUID(),
@@ -248,6 +268,7 @@ function createUser(familyId: string, body: any) {
     str(body.role, 'role', 20),
     str(body.avatar, 'avatar', 8),
     hashToken(token),
+    isAdmin ? 1 : 0,
   );
   return token;
 }
@@ -255,7 +276,8 @@ function createUser(familyId: string, body: any) {
 const createFamily = db.transaction((body: any) => {
   const id = crypto.randomUUID();
   q.insertFamily.run(id, str(body.familyName, 'familyName', 30), newInviteCode());
-  return createUser(id, body);
+  // 家族を作った人が管理者になる
+  return createUser(id, body, true);
 });
 
 const water = db.transaction((me: User) => {
@@ -329,6 +351,31 @@ async function nudge(me: User, body: any) {
   return { sent };
 }
 
+function requireAdmin(me: User) {
+  if (!me.is_admin) throw new HttpError(403, 'admin only');
+}
+
+// 家族管理: 管理者だけが他メンバーの除名と権限変更を行える
+function removeMember(me: User, body: any) {
+  requireAdmin(me);
+  const target = q.userById.get(str(body.id, 'id', 64), me.family_id);
+  if (!target) throw new HttpError(404, 'member not found');
+  if (target.id === me.id) throw new HttpError(400, 'cannot remove yourself');
+  if (target.is_admin && q.adminCount.get(me.family_id)!.n <= 1) throw new HttpError(400, 'family needs at least one admin');
+  // 行は残す。除名しても写真の作者名が消えず、家族の記録が台無しにならない
+  q.removeUser.run(target.id);
+  q.deleteUserSubs.run(target.id);
+}
+
+function setMemberAdmin(me: User, body: any) {
+  requireAdmin(me);
+  const target = q.userById.get(str(body.id, 'id', 64), me.family_id);
+  if (!target) throw new HttpError(404, 'member not found');
+  const admin = !!body.admin;
+  if (target.is_admin && !admin && q.adminCount.get(me.family_id)!.n <= 1) throw new HttpError(400, 'family needs at least one admin');
+  q.setAdmin.run(admin ? 1 : 0, target.id);
+}
+
 async function json(req: Request): Promise<any> {
   try {
     return await req.json();
@@ -387,6 +434,16 @@ async function route(req: Request): Promise<Response> {
     }
     case 'POST /api/nudge':
       return Response.json(await nudge(auth(req), await json(req)));
+    case 'POST /api/members/remove': {
+      const me = auth(req);
+      removeMember(me, await json(req));
+      return Response.json(state(me));
+    }
+    case 'POST /api/members/admin': {
+      const me = auth(req);
+      setMemberAdmin(me, await json(req));
+      return Response.json(state(me));
+    }
   }
   throw new HttpError(404, 'not found');
 }

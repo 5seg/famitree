@@ -10,6 +10,7 @@ export interface FamilyMember {
   streak: number;
   lastMessage?: string;
   isCurrentUser?: boolean;
+  isAdmin?: boolean;
 }
 
 export interface TreeArtifact {

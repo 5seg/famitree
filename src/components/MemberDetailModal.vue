@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { X, Droplets, Flame, Heart } from 'lucide-vue-next';
+import { X, Droplets, Flame, Heart, Crown, UserMinus } from 'lucide-vue-next';
 import { useModalA11y } from '../composables/useModalA11y';
 import type { FamilyMember } from '../types';
 
 const props = defineProps<{
   member: FamilyMember | null;
+  viewerIsAdmin?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'sendHeart', member: FamilyMember): void;
+  (e: 'removeMember', member: FamilyMember): void;
+  (e: 'toggleAdmin', member: FamilyMember): void;
 }>();
 
 useModalA11y(() => props.member !== null, () => emit('close'));
@@ -42,7 +45,16 @@ useModalA11y(() => props.member !== null, () => emit('close'));
         <div class="w-16 h-16 rounded-full flex items-center justify-center text-3xl border-2 border-stone-200 shadow-sm mb-2 bg-amber-50">
           {{ member.avatar }}
         </div>
-        <h3 class="text-base font-bold text-stone-800">{{ member.name }}</h3>
+        <h3 class="text-base font-bold text-stone-800 flex items-center gap-1.5">
+          {{ member.name }}
+          <span
+            v-if="member.isAdmin"
+            class="px-1.5 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[10px] font-semibold flex items-center gap-0.5"
+          >
+            <Crown class="w-3 h-3 fill-amber-500 text-amber-500" />
+            管理者
+          </span>
+        </h3>
         <span class="text-xs text-stone-500">{{ member.role }}</span>
 
         <!-- Status badge -->
@@ -80,6 +92,25 @@ useModalA11y(() => props.member !== null, () => emit('close'));
           <Heart class="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
           <span>そっとハート（見守りエール）を送る</span>
         </button>
+
+        <!-- 家族管理 (管理者のみ) -->
+        <div v-if="viewerIsAdmin && !member.isCurrentUser" class="mt-4 w-full pt-4 border-t border-stone-100">
+          <span class="text-[10px] font-semibold text-stone-400">家族の管理</span>
+          <button
+            @click="$emit('toggleAdmin', member)"
+            class="mt-2 w-full py-2.5 px-4 rounded-2xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Crown class="w-3.5 h-3.5" />
+            <span>{{ member.isAdmin ? '管理者を外す' : '管理者にする' }}</span>
+          </button>
+          <button
+            @click="$emit('removeMember', member)"
+            class="mt-2 w-full py-2.5 px-4 rounded-2xl bg-stone-100 hover:bg-rose-50 border border-stone-200 hover:border-rose-200 text-stone-600 hover:text-rose-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <UserMinus class="w-3.5 h-3.5" />
+            <span>家族から外す</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>

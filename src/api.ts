@@ -81,3 +81,9 @@ export const subscribePush = (sub: PushSubscriptionJSON) => request<void>('POST'
 // nudge: 未水やりの家族への催促（message 必須, 40文字まで） / heart: 見守りエール
 export const sendNudge = (to: string[], kind: 'nudge' | 'heart', message?: string) =>
   request<{ sent: number }>('POST', '/api/nudge', { to, kind, message });
+
+// 家族管理（管理者のみ）
+export const removeMember = (id: string) => request<AppState>('POST', '/api/members/remove', { id });
+
+export const setMemberAdmin = (id: string, admin: boolean) =>
+  request<AppState>('POST', '/api/members/admin', { id, admin });

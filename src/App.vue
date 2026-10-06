@@ -12,7 +12,7 @@ import MemberDetailModal from './components/MemberDetailModal.vue';
 import DemoControlPanel from './components/DemoControlPanel.vue';
 import InfoModal from './components/InfoModal.vue';
 import JoinScreen from './components/JoinScreen.vue';
-import { fetchState, waterTree, sendNudge, type AppState } from './api';
+import { fetchState, waterTree, sendNudge, removeMember, setMemberAdmin, type AppState } from './api';
 import { authed, describeError } from './session';
 import type { TreeState, FamilyMember, TreeArtifact } from './types';
 
@@ -88,6 +88,8 @@ const currentUser = computed(() => members.value.find((m) => m.isCurrentUser));
 
 const hasWateredToday = computed(() => currentUser.value?.wateredToday ?? false);
 
+const isAdmin = computed(() => currentUser.value?.isAdmin ?? false);
+
 // Handle Watering Action
 const handleWaterTree = async () => {
   if (hasWateredToday.value) return;
@@ -144,6 +146,29 @@ const handleLevelUp = () => {
   treeLevel.value += 1;
   expPercent.value = 75;
   showToast('ツリーレベルが上がりました！✨');
+};
+
+// 家族管理 (管理者のみ)
+const handleRemoveMember = async (m: FamilyMember) => {
+  if (!window.confirm(`${m.name}さんを家族から外しますか？写真などの記録は残ります。`)) return;
+  try {
+    applyState(await removeMember(m.id));
+    selectedMember.value = null;
+    showToast(`${m.name}さんを家族から外しました`);
+  } catch (e) {
+    showToast(describeError(e));
+  }
+};
+
+const handleToggleAdmin = async (m: FamilyMember) => {
+  try {
+    const s = await setMemberAdmin(m.id, !m.isAdmin);
+    applyState(s);
+    selectedMember.value = s.members.find((x) => x.id === m.id) ?? null;
+    showToast(m.isAdmin ? `${m.name}さんを管理者から外しました` : `${m.name}さんを管理者にしました`);
+  } catch (e) {
+    showToast(describeError(e));
+  }
 };
 
 const unwateredMembers = computed(() =>
@@ -242,8 +267,11 @@ const unwateredMembers = computed(() =>
 
     <MemberDetailModal
       :member="selectedMember"
+      :viewer-is-admin="isAdmin"
       @close="selectedMember = null"
       @send-heart="handleSendHeart"
+      @remove-member="handleRemoveMember"
+      @toggle-admin="handleToggleAdmin"
     />
 
     <InfoModal
