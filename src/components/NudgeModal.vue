@@ -2,6 +2,8 @@
 import { ref, watch } from 'vue';
 import { X, Send, CheckCircle2 } from 'lucide-vue-next';
 import { useModalA11y } from '../composables/useModalA11y';
+import { sendNudge } from '../api';
+import { describeError } from '../session';
 import type { FamilyMember } from '../types';
 
 const props = defineProps<{
@@ -23,20 +25,39 @@ const NUDGE_MESSAGES = [
 
 const selectedMessage = ref(NUDGE_MESSAGES[0]);
 const isSent = ref(false);
+const sending = ref(false);
+const note = ref('');
+const error = ref('');
 
 watch(() => props.isOpen, (val) => {
   if (val) {
     isSent.value = false;
+    note.value = error.value = '';
     selectedMessage.value = NUDGE_MESSAGES[0];
   }
 });
 
-const handleSend = () => {
-  isSent.value = true;
-  setTimeout(() => {
-    isSent.value = false;
-    emit('close');
-  }, 1800);
+const handleSend = async () => {
+  if (sending.value || !props.unwateredMembers.length) return;
+  sending.value = true;
+  error.value = '';
+  try {
+    const msg = selectedMessage.value.replace(/[「」]/g, '');
+    const { sent } = await sendNudge(props.unwateredMembers.map((m) => m.id), 'nudge', msg);
+    if (sent === 0) {
+      note.value = '今日はもう届いています';
+      return;
+    }
+    isSent.value = true;
+    setTimeout(() => {
+      isSent.value = false;
+      emit('close');
+    }, 1800);
+  } catch (e) {
+    error.value = describeError(e);
+  } finally {
+    sending.value = false;
+  }
 };
 </script>
 
@@ -119,9 +140,13 @@ const handleSend = () => {
           </div>
         </div>
 
+        <p v-if="note" class="text-[11px] text-stone-600 text-center">{{ note }}</p>
+        <p v-if="error" role="alert" class="text-[11px] text-rose-600 font-semibold text-center">{{ error }}</p>
+
         <button
           @click="handleSend"
-          class="mt-1 w-full py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+          :disabled="sending || !unwateredMembers.length"
+          class="mt-1 w-full py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer"
         >
           <Send class="w-3.5 h-3.5" />
           <span>ふんわり合図を送る</span>

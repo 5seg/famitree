@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import Header from './components/Header.vue';
 import FamilyStatusBar from './components/FamilyStatusBar.vue';
 import InteractiveTreeCanvas from './components/InteractiveTreeCanvas.vue';
@@ -11,16 +11,34 @@ import NudgeModal from './components/NudgeModal.vue';
 import MemberDetailModal from './components/MemberDetailModal.vue';
 import DemoControlPanel from './components/DemoControlPanel.vue';
 import InfoModal from './components/InfoModal.vue';
-import { initialFamilyMembers, initialArtifacts } from './mockData';
-import { isAllowedImageUrl } from './types';
+import JoinScreen from './components/JoinScreen.vue';
+import { fetchState, waterTree, sendNudge, removeMember, setMemberAdmin, leaveFamily, clearToken, type AppState } from './api';
+import { authed, describeError } from './session';
 import type { TreeState, FamilyMember, TreeArtifact } from './types';
 
-// State
-const members = ref<FamilyMember[]>(initialFamilyMembers);
-const artifacts = ref<TreeArtifact[]>(initialArtifacts);
+// State (サーバーの AppState をそのまま反映する)
+const isDev = import.meta.env.DEV;
+const loaded = ref(false);
+const familyName = ref('');
+const inviteCode = ref('');
+const members = ref<FamilyMember[]>([]);
+const artifacts = ref<TreeArtifact[]>([]);
 const treeState = ref<TreeState>('growing');
-const treeLevel = ref<number>(3);
-const expPercent = ref<number>(65);
+const treeLevel = ref<number>(1);
+const expPercent = ref<number>(0);
+const streak = ref<number>(0);
+
+const applyState = (s: AppState) => {
+  familyName.value = s.family.name;
+  inviteCode.value = s.family.inviteCode;
+  members.value = s.members;
+  artifacts.value = s.artifacts;
+  treeState.value = s.family.treeState;
+  treeLevel.value = s.family.level;
+  expPercent.value = s.family.exp;
+  streak.value = s.family.streak;
+  loaded.value = true;
+};
 
 // Modals state
 const isWateringModalOpen = ref(false);
@@ -41,80 +59,78 @@ const showToast = (msg: string) => {
   }, 2800);
 };
 
-const currentUser = computed(
-  () => members.value.find((m) => m.isCurrentUser) || members.value[0]
-);
+const load = async () => {
+  if (!authed.value) return;
+  try {
+    applyState(await fetchState());
+  } catch (e) {
+    showToast(describeError(e));
+  }
+};
 
-const hasWateredToday = computed(() => currentUser.value.wateredToday);
+const onVisible = () => {
+  if (document.visibilityState === 'visible') load();
+};
 
-const streak = computed(() => currentUser.value.streak);
+onMounted(() => {
+  load();
+  document.addEventListener('visibilitychange', onVisible);
+});
+onUnmounted(() => document.removeEventListener('visibilitychange', onVisible));
+
+const onJoined = () => {
+  authed.value = true;
+  loaded.value = false;
+  load();
+};
+
+const currentUser = computed(() => members.value.find((m) => m.isCurrentUser));
+
+const hasWateredToday = computed(() => currentUser.value?.wateredToday ?? false);
+
+const isAdmin = computed(() => currentUser.value?.isAdmin ?? false);
 
 // Handle Watering Action
-const handleWaterTree = () => {
+const handleWaterTree = async () => {
   if (hasWateredToday.value) return;
+  try {
+    applyState(await waterTree());
+  } catch (e) {
+    showToast(describeError(e));
+    return;
+  }
 
   isWateringAnimation.value = true;
   setTimeout(() => {
     isWateringAnimation.value = false;
   }, 1200);
-
-  members.value = members.value.map((m) =>
-    m.isCurrentUser
-      ? { ...m, wateredToday: true, streak: m.streak + 1 }
-      : m
-  );
-
-  const newExp = expPercent.value + 30;
-  if (newExp >= 100) {
-    treeLevel.value += 1;
-    expPercent.value = newExp % 100;
-  } else {
-    expPercent.value = newExp;
-  }
-
-  treeState.value = 'thriving';
   isWateringModalOpen.value = true;
 };
 
-// Handle Adding New Artifact
-const handleAddArtifact = (
-  newArt: Omit<TreeArtifact, 'id' | 'date' | 'coords'>
-) => {
-  const clip = (str: string, n: number) =>
-    Array.from(str.trim()).slice(0, n).join('');
-  const content =
-    newArt.type === 'photo' ? newArt.content : clip(newArt.content, 20);
-  if (
-    newArt.type === 'photo' ? !isAllowedImageUrl(content) : !content
-  ) {
-    showToast('⚠️ 追加できない内容です');
-    return;
-  }
-  const randomX = Math.floor(Math.random() * 50) + 25;
-  const randomY = Math.floor(Math.random() * 35) + 35;
-  const randomRotate = Math.floor(Math.random() * 12) - 6;
-
-  const item: TreeArtifact = {
-    ...newArt,
-    author: currentUser.value.name,
-    authorAvatar: currentUser.value.avatar,
-    authorRole: currentUser.value.role,
-    title: newArt.type === 'photo' ? clip(newArt.title, 24) : newArt.title,
-    content,
-    id: `art-${Date.now()}`,
-    date: 'たった今',
-    coords: { x: randomX, y: randomY, rotate: randomRotate },
-  };
-
-  artifacts.value = [item, ...artifacts.value];
+// AddContentModal がAPI呼び出しまで行い、返ってきた状態を受け取る
+const handleSaved = (s: AppState, type: TreeArtifact['type']) => {
+  applyState(s);
   showToast(
-    newArt.type === 'photo'
+    type === 'photo'
       ? '📸 写真を木にぶら下げました！'
       : '🪵 言葉を木のプレートに刻みました！'
   );
 };
 
-// Demo Controls handlers
+const handleSendHeart = async (m: FamilyMember) => {
+  try {
+    const { sent } = await sendNudge([m.id], 'heart');
+    showToast(
+      sent
+        ? `❤️ ${m.name}さんに温かい見守りエールを送りました`
+        : '今日はもうエールを送っています'
+    );
+  } catch (e) {
+    showToast(describeError(e));
+  }
+};
+
+// Demo Controls handlers (開発時のみ。ローカル状態だけを書き換える)
 const handleToggleUserWatered = () => {
   members.value = members.value.map((m) =>
     m.isCurrentUser ? { ...m, wateredToday: !m.wateredToday } : m
@@ -122,9 +138,7 @@ const handleToggleUserWatered = () => {
 };
 
 const handleResetStreak = () => {
-  members.value = members.value.map((m) =>
-    m.isCurrentUser ? { ...m, streak: 1 } : m
-  );
+  streak.value = 1;
   showToast('連続日数を1日にリセットしました');
 };
 
@@ -134,8 +148,45 @@ const handleLevelUp = () => {
   showToast('ツリーレベルが上がりました！✨');
 };
 
+// 家族管理 (管理者のみ)
+const handleRemoveMember = async (m: FamilyMember) => {
+  if (!window.confirm(`${m.name}さんを家族から外しますか？写真などの記録は残ります。`)) return;
+  try {
+    applyState(await removeMember(m.id));
+    selectedMember.value = null;
+    showToast(`${m.name}さんを家族から外しました`);
+  } catch (e) {
+    showToast(describeError(e));
+  }
+};
+
+const handleToggleAdmin = async (m: FamilyMember) => {
+  try {
+    const s = await setMemberAdmin(m.id, !m.isAdmin);
+    applyState(s);
+    selectedMember.value = s.members.find((x) => x.id === m.id) ?? null;
+    showToast(m.isAdmin ? `${m.name}さんを管理者から外しました` : `${m.name}さんを管理者にしました`);
+  } catch (e) {
+    showToast(describeError(e));
+  }
+};
+
+const handleLeaveFamily = async () => {
+  if (!window.confirm('この家族から抜けますか？')) return;
+  try {
+    await leaveFamily();
+  } catch (e) {
+    showToast(describeError(e));
+    return;
+  }
+  clearToken();
+  authed.value = false;
+  loaded.value = false;
+  selectedMember.value = null;
+};
+
 const unwateredMembers = computed(() =>
-  members.value.filter((m) => !m.wateredToday)
+  members.value.filter((m) => !m.wateredToday && !m.isCurrentUser)
 );
 </script>
 
@@ -151,15 +202,23 @@ const unwateredMembers = computed(() =>
         </div>
       </div>
 
+      <JoinScreen v-if="!authed" @joined="onJoined" />
+
+      <div v-else-if="!loaded" class="flex-1 flex items-center justify-center text-xs text-stone-500">
+        🌱 木を育てています…
+      </div>
+
       <!-- Scrollable Main Mobile View -->
-      <div class="flex-1 flex flex-col justify-between overflow-y-auto overflow-x-hidden relative">
+      <div v-else class="flex-1 flex flex-col justify-between overflow-y-auto overflow-x-hidden relative">
         <!-- Header -->
         <Header
           :streak="streak"
           :tree-level="treeLevel"
           :exp-percent="expPercent"
+          :family-name="familyName"
+          :member-count="members.length"
           @open-info="isInfoModalOpen = true"
-          @switch-family="showToast('🏡 ひだまりファミリーを選択中')"
+          @switch-family="isInfoModalOpen = true"
         />
 
         <!-- Ambient Family Status Bar -->
@@ -206,7 +265,7 @@ const unwateredMembers = computed(() =>
       :tree-level="treeLevel"
       :current-user="currentUser"
       @close="isAddModalOpen = false"
-      @add-artifact="handleAddArtifact"
+      @saved="handleSaved"
     />
 
     <ArtifactLightboxModal
@@ -222,17 +281,25 @@ const unwateredMembers = computed(() =>
 
     <MemberDetailModal
       :member="selectedMember"
+      :viewer-is-admin="isAdmin"
       @close="selectedMember = null"
-      @send-heart="(name) => showToast(`❤️ ${name}さんに温かい見守りエールを送りました`)"
+      @send-heart="handleSendHeart"
+      @remove-member="handleRemoveMember"
+      @toggle-admin="handleToggleAdmin"
+      @leave-family="handleLeaveFamily"
     />
 
     <InfoModal
       :is-open="isInfoModalOpen"
+      :family-name="familyName"
+      :invite-code="inviteCode"
+      @toast="showToast"
       @close="isInfoModalOpen = false"
     />
 
     <!-- Demonstration / Judge Control Panel -->
     <DemoControlPanel
+      v-if="isDev && authed && loaded"
       :tree-state="treeState"
       :user-watered="hasWateredToday"
       :streak="streak"
