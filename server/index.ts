@@ -245,12 +245,13 @@ async function addArtifact(me: User, req: Request) {
     const file = form.get('file');
     if (!(file instanceof File)) throw new HttpError(400, 'file is required');
     if (file.size > MAX_PHOTO_BYTES) throw new HttpError(413, 'photo is too large (max 5MB)');
+    const title = str(form.get('title') || '日常のひとこま', 'title', 30);
     const bytes = new Uint8Array(await file.arrayBuffer());
     // クライアントで JPEG に再エンコードして送る前提。中身で判定し Content-Type は信用しない
     if (!(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)) throw new HttpError(415, 'photo must be JPEG');
     const name = `${crypto.randomUUID()}.jpg`;
     await Bun.write(join(UPLOAD_DIR, name), bytes);
-    q.insertArtifact.run(crypto.randomUUID(), me.family_id, me.id, 'photo', str(form.get('title') || '日常のひとこま', 'title', 30), `/uploads/${name}`, x, y, rotate);
+    q.insertArtifact.run(crypto.randomUUID(), me.family_id, me.id, 'photo', title, `/uploads/${name}`, x, y, rotate);
   } else {
     const body = await json(req);
     if (body.type !== 'wood') throw new HttpError(400, 'type must be wood (photos use multipart)');
@@ -266,7 +267,7 @@ async function sendPush(userId: string, payload: { title: string; body: string }
         .sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, JSON.stringify(payload))
         .catch((e) => {
           if (e.statusCode === 404 || e.statusCode === 410) q.deleteSub.run(s.endpoint);
-          else console.error('push failed', e.statusCode, e.body);
+          else console.error('push failed', e.statusCode ?? e, e.body ?? '');
         }),
     ),
   );

@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import { X, Camera, PenTool, Check } from 'lucide-vue-next';
+import { ref, watch, onUnmounted } from 'vue';
+import { X, Camera, PenTool, ImagePlus } from 'lucide-vue-next';
 import { useModalA11y } from '../composables/useModalA11y';
+import { addPhoto, addWood, type AppState } from '../api';
+import { describeError } from '../session';
 import type { TreeArtifact, FamilyMember } from '../types';
 
 const props = defineProps<{
@@ -12,49 +14,85 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'addArtifact', artifact: Omit<TreeArtifact, 'id' | 'date' | 'coords'>): void;
+  (e: 'saved', state: AppState, type: TreeArtifact['type']): void;
 }>();
 
 useModalA11y(() => props.isOpen, () => emit('close'));
 
-const PRESET_IMAGES = [
-  { label: 'お弁当 🍱', url: 'https://images.unsplash.com/photo-1569718212165-3a8278d5f624?auto=format&fit=crop&w=600&q=80' },
-  { label: '青空 🌤️', url: 'https://images.unsplash.com/photo-1534088568595-a066f410bcda?auto=format&fit=crop&w=600&q=80' },
-  { label: '夕焼け 🌇', url: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80' },
-  { label: 'お散歩の道 🍃', url: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=600&q=80' },
-];
+const MAX_SIDE = 1600;
+
+// 長辺 1600px 以下の JPEG に縮小（EXIF の向きは反映済み）
+async function downscale(file: File): Promise<Blob> {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const k = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * k);
+  canvas.height = Math.round(bmp.height * k);
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#fff'; // 透過PNG等は白背景にしてからJPEG化
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close();
+  return new Promise((res, rej) =>
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error('encode failed'))), 'image/jpeg', 0.85)
+  );
+}
 
 const activeTab = ref<'photo' | 'wood'>('photo');
-const selectedImage = ref(PRESET_IMAGES[0].url);
+const photo = ref<Blob | null>(null);
+const previewUrl = ref('');
 const caption = ref('今日のみつけたもの');
 const woodText = ref('今日も一日お疲れさま！');
+const sending = ref(false);
+const error = ref('');
 
-const handleSubmit = () => {
-  const authorName = props.currentUser?.name || '自分';
-  const authorAvatar = props.currentUser?.avatar || '👦';
-  const authorRole = props.currentUser?.role || '高校生';
+const setPreview = (url: string) => {
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = url;
+};
+onUnmounted(() => setPreview(''));
 
-  if (activeTab.value === 'photo') {
-    emit('addArtifact', {
-      type: 'photo',
-      author: authorName,
-      authorAvatar: authorAvatar,
-      authorRole: authorRole,
-      title: caption.value.trim() || '日常のひとこま',
-      content: selectedImage.value,
-    });
-  } else {
-    if (!woodText.value.trim()) return;
-    emit('addArtifact', {
-      type: 'wood',
-      author: authorName,
-      authorAvatar: authorAvatar,
-      authorRole: authorRole,
-      title: '木製プレート',
-      content: woodText.value.slice(0, 20),
-    });
+watch(() => props.isOpen, (open) => {
+  if (open) {
+    error.value = '';
+    photo.value = null;
+    setPreview('');
   }
-  emit('close');
+});
+
+const onFile = async (e: Event) => {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  error.value = '';
+  try {
+    photo.value = await downscale(file);
+    setPreview(URL.createObjectURL(photo.value));
+  } catch {
+    photo.value = null;
+    setPreview('');
+    error.value = 'この画像は読み込めませんでした';
+  }
+};
+
+const handleSubmit = async () => {
+  if (sending.value) return;
+  const isPhoto = activeTab.value === 'photo';
+  if (isPhoto ? !photo.value : !woodText.value.trim()) return;
+  sending.value = true;
+  error.value = '';
+  try {
+    const state = isPhoto
+      ? await addPhoto(photo.value!, caption.value.trim())
+      : await addWood(woodText.value.trim());
+    emit('saved', state, isPhoto ? 'photo' : 'wood');
+    emit('close');
+  } catch (e) {
+    error.value = describeError(e);
+  } finally {
+    sending.value = false;
+  }
 };
 </script>
 
@@ -117,26 +155,15 @@ const handleSubmit = () => {
       <form @submit.prevent="handleSubmit" class="mt-4 flex flex-col gap-4">
         <div v-if="activeTab === 'photo'">
           <label class="block text-xs font-semibold text-stone-700 mb-1.5">
-            ぶら下げる写真を選ぶ（モック）:
+            ぶら下げる写真を選ぶ:
           </label>
-          <div class="grid grid-cols-4 gap-2 mb-3">
-            <button
-              v-for="(img, idx) in PRESET_IMAGES"
-              :key="idx"
-              type="button"
-              @click="selectedImage = img.url"
-              class="relative rounded-xl overflow-hidden aspect-square border-2 transition-all cursor-pointer"
-              :class="selectedImage === img.url ? 'border-emerald-500 ring-2 ring-emerald-300' : 'border-transparent opacity-75 hover:opacity-100'"
-            >
-              <img :src="img.url" :alt="img.label" loading="lazy" class="w-full h-full object-cover" />
-              <div
-                v-if="selectedImage === img.url"
-                class="absolute inset-0 bg-emerald-900/30 flex items-center justify-center"
-              >
-                <Check class="w-4 h-4 text-white" />
-              </div>
-            </button>
-          </div>
+          <label
+            class="mb-3 flex items-center justify-center gap-1.5 py-3 rounded-2xl border-2 border-dashed border-stone-300 bg-white text-xs font-semibold text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer"
+          >
+            <ImagePlus class="w-4 h-4" />
+            <span>{{ photo ? '別の写真を選ぶ' : '写真を選ぶ・撮る' }}</span>
+            <input type="file" accept="image/*" class="sr-only" @change="onFile" />
+          </label>
 
           <!-- Caption input -->
           <label class="block text-xs font-semibold text-stone-700 mb-1">
@@ -145,16 +172,16 @@ const handleSubmit = () => {
           <input
             type="text"
             v-model="caption"
-            maxlength="24"
+            maxlength="30"
             class="w-full px-3 py-2 rounded-xl bg-white border border-stone-200 text-xs focus:outline-emerald-500"
             placeholder="例: 夕暮れの空、今日のお弁当"
           />
 
           <!-- Polaroid preview -->
-          <div class="mt-3 flex flex-col items-center">
+          <div v-if="previewUrl" class="mt-3 flex flex-col items-center">
             <span class="text-[10px] text-stone-600 mb-1">木にかかるイメージ</span>
             <div class="bg-white p-2 pb-3 rounded-xs shadow-polaroid border border-stone-200 w-28 text-center rotate-1">
-              <img :src="selectedImage" alt="preview" class="w-full h-20 object-cover rounded-2xs" />
+              <img :src="previewUrl" alt="preview" class="w-full h-20 object-cover rounded-2xs" />
               <p class="mt-1 text-[10px] font-medium text-stone-700 truncate">
                 {{ caption || 'タイトル' }}
               </p>
@@ -197,12 +224,15 @@ const handleSubmit = () => {
           </div>
         </div>
 
+        <p v-if="error" role="alert" class="text-[11px] text-rose-600 font-semibold">{{ error }}</p>
+
         <!-- Submit Button -->
         <button
           type="submit"
-          class="w-full py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition-colors mt-2 cursor-pointer"
+          :disabled="sending || (activeTab === 'photo' && !photo)"
+          class="w-full py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold text-xs shadow-md transition-colors mt-2 cursor-pointer"
         >
-          木に吊るす 🌿
+          {{ sending ? '送信中…' : '木に吊るす 🌿' }}
         </button>
       </form>
     </div>

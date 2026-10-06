@@ -2,6 +2,8 @@
 import { Sparkles, Flame, Info, ChevronDown } from 'lucide-vue-next';
 
 defineProps<{
+  familyName: string;
+  memberCount: number;
   streak: number;
   treeLevel: number;
   expPercent: number;
@@ -24,10 +26,10 @@ defineEmits<{
         <span class="text-lg">🏡</span>
         <div>
           <div class="flex items-center gap-1">
-            <span class="text-xs font-bold text-stone-800 tracking-tight">ひだまりファミリーの木</span>
+            <span class="text-xs font-bold text-stone-800 tracking-tight">{{ familyName }}の木</span>
             <ChevronDown class="w-3.5 h-3.5 text-stone-500 group-hover:translate-y-0.5 transition-transform" />
           </div>
-          <span class="text-[10px] text-stone-500">4人の庭</span>
+          <span class="text-[10px] text-stone-500">{{ memberCount }}人の庭</span>
         </div>
       </button>
 

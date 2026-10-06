@@ -9,7 +9,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'sendHeart', name: string): void;
+  (e: 'sendHeart', member: FamilyMember): void;
 }>();
 
 useModalA11y(() => props.member !== null, () => emit('close'));
@@ -73,7 +73,8 @@ useModalA11y(() => props.member !== null, () => emit('close'));
         </p>
 
         <button
-          @click="() => { if (member) { $emit('sendHeart', member.name); $emit('close'); } }"
+          v-if="!member.isCurrentUser"
+          @click="() => { if (member) { $emit('sendHeart', member); $emit('close'); } }"
           class="mt-4 w-full py-2.5 px-4 rounded-2xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
         >
           <Heart class="w-3.5 h-3.5 fill-rose-500 text-rose-500" />

@@ -1,16 +1,57 @@
 <script setup lang="ts">
-import { X, ShieldCheck, Sparkles, MessageCircle } from 'lucide-vue-next';
+import { ref, watch } from 'vue';
+import { X, ShieldCheck, Sparkles, MessageCircle, Link, Bell } from 'lucide-vue-next';
 import { useModalA11y } from '../composables/useModalA11y';
+import { isPushSupported, enablePush, isPushEnabled } from '../push';
 
 const props = defineProps<{
   isOpen: boolean;
+  familyName: string;
+  inviteCode: string;
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
+  (e: 'toast', msg: string): void;
 }>();
 
 useModalA11y(() => props.isOpen, () => emit('close'));
+
+const pushSupported = isPushSupported();
+const pushOn = ref(false);
+const pushBusy = ref(false);
+
+// 開くたびに購読状態を確認するだけ。許可ダイアログはボタンを押すまで出さない
+watch(() => props.isOpen, async (open) => {
+  if (open && pushSupported) pushOn.value = await isPushEnabled();
+});
+
+const togglePush = async () => {
+  if (pushOn.value || pushBusy.value) return;
+  pushBusy.value = true;
+  try {
+    pushOn.value = await enablePush();
+    if (!pushOn.value) emit('toast', '通知をオンにできませんでした');
+  } catch {
+    emit('toast', '通知をオンにできませんでした');
+  } finally {
+    pushBusy.value = false;
+  }
+};
+
+const shareInvite = async () => {
+  const url = `${location.origin}/?invite=${props.inviteCode}`;
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: 'FamiTree', text: `${props.familyName}の木に参加しよう`, url });
+    } else {
+      await navigator.clipboard.writeText(url);
+      emit('toast', '🔗 招待リンクをコピーしました');
+    }
+  } catch (e) {
+    if ((e as DOMException).name !== 'AbortError') emit('toast', 'コピーできませんでした');
+  }
+};
 </script>
 
 <template>
@@ -40,6 +81,34 @@ useModalA11y(() => props.isOpen, () => emit('close'));
       </div>
 
       <div class="mt-3 space-y-3 text-xs leading-relaxed text-stone-600">
+        <div class="p-3 bg-white rounded-2xl border border-stone-200 text-stone-700">
+          <span class="font-bold block text-stone-800">🏡 {{ familyName }}</span>
+          <span class="block mt-1">招待コード</span>
+          <span class="block font-mono text-base font-bold tracking-widest text-stone-800 select-all">{{ inviteCode }}</span>
+          <button
+            type="button"
+            @click="shareInvite"
+            class="mt-2 w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Link class="w-3.5 h-3.5" />
+            <span>招待リンクをコピー</span>
+          </button>
+
+          <template v-if="pushSupported">
+            <button
+              type="button"
+              @click="togglePush"
+              :disabled="pushOn || pushBusy"
+              class="mt-2 w-full py-2 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+              :class="pushOn ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-stone-50 border-stone-200 text-stone-700 hover:bg-stone-100 cursor-pointer'"
+            >
+              <Bell class="w-3.5 h-3.5" />
+              <span>{{ pushOn ? '家族からの通知はオンです' : '家族からの通知を受け取る' }}</span>
+            </button>
+          </template>
+          <span class="block mt-1 text-[10px] text-stone-500">通知を受け取るには、iPhoneでは「ホーム画面に追加」したアプリで開く必要があります。</span>
+        </div>
+
         <div class="p-3 bg-emerald-50 rounded-2xl border border-emerald-200/80 text-emerald-900">
           <span class="font-bold block mb-1 flex items-center gap-1.5">
             <Sparkles class="w-4 h-4 text-emerald-600" />

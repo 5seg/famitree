@@ -40,6 +40,11 @@ bun install
 bun run dev
 ```
 
+### API サーバーの起動 (開発)
+```bash
+bun run dev:api   # http://localhost:3000 。Vite が /api と /uploads をここへプロキシする
+```
+
 ### 本番ビルド
 ```bash
 bun run build
@@ -49,6 +54,27 @@ bun run build
 ```bash
 bun run deploy:pages
 ```
+
+### API サーバーのデプロイ (Bun + SQLite)
+
+`server/index.ts` を Bun で常駐させ、リバースプロキシで HTTPS 化する。DB とアップロード画像は `DATA_DIR` に保存されるので、このディレクトリはバックアップ対象。
+
+```bash
+bun install --production
+bunx web-push generate-vapid-keys   # 初回のみ。出力は環境変数として登録し、ファイルに平文で残さない
+bun run start:api
+```
+
+| 環境変数 | 例 / 既定値 | 説明 |
+|---|---|---|
+| `PORT` | `3000` | 待ち受けポート |
+| `DATA_DIR` | `server/data` | SQLite と `uploads/` の保存先 |
+| `PUBLIC_URL` | `https://famitree-api.5seg.top` | 写真 URL の前に付けるオリジン |
+| `ALLOWED_ORIGINS` | `https://famitree.pages.dev` | CORS で許可するフロントのオリジン (カンマ区切り) |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | | 未設定なら Web Push は無効 |
+| `VAPID_SUBJECT` | `https://famitree-api.5seg.top` | VAPID の連絡先 |
+
+フロント側は Pages のビルド時に `VITE_API_BASE=https://famitree-api.5seg.top` を設定する。リバースプロキシのボディサイズ上限は 6MB 以上にしておく (写真は最大 5MB)。
 
 ## オープンソースライセンス表示 (Third-Party Licenses)
 
@@ -61,6 +87,8 @@ bun run deploy:pages
   Copyright (c) Lucide Contributors
 - **[canvas-confetti](https://github.com/catdad/canvas-confetti)** (v1.9.4) - [ISC License](https://github.com/catdad/canvas-confetti/blob/master/LICENSE)
   Copyright (c) Kiril Vatev
+- **[web-push](https://github.com/web-push-libs/web-push)** (v3.6.7) - [Mozilla Public License 2.0](https://github.com/web-push-libs/web-push/blob/master/LICENSE)
+  Copyright (c) 2015 Marco Castelluccio
 
 ### Development Dependencies
 - **[vite](https://github.com/vitejs/vite)** (v8.2.2) - [MIT License](https://github.com/vitejs/vite/blob/main/LICENSE)
