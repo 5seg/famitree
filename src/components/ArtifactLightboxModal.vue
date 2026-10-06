@@ -41,6 +41,7 @@ useModalA11y(() => props.artifact !== null, () => emit('close'));
           <img
             :src="artifact.content"
             :alt="artifact.title"
+            referrerpolicy="no-referrer"
             class="w-full h-full object-cover"
           />
         </div>

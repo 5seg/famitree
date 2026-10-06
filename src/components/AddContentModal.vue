@@ -51,7 +51,7 @@ const handleSubmit = () => {
       authorAvatar: authorAvatar,
       authorRole: authorRole,
       title: '木製プレート',
-      content: woodText.value.slice(0, 20),
+      content: Array.from(woodText.value).slice(0, 20).join(''),
     });
   }
   emit('close');
@@ -128,7 +128,7 @@ const handleSubmit = () => {
               class="relative rounded-xl overflow-hidden aspect-square border-2 transition-all cursor-pointer"
               :class="selectedImage === img.url ? 'border-emerald-500 ring-2 ring-emerald-300' : 'border-transparent opacity-75 hover:opacity-100'"
             >
-              <img :src="img.url" :alt="img.label" loading="lazy" class="w-full h-full object-cover" />
+              <img :src="img.url" :alt="img.label" loading="lazy" referrerpolicy="no-referrer" class="w-full h-full object-cover" />
               <div
                 v-if="selectedImage === img.url"
                 class="absolute inset-0 bg-emerald-900/30 flex items-center justify-center"
@@ -154,7 +154,7 @@ const handleSubmit = () => {
           <div class="mt-3 flex flex-col items-center">
             <span class="text-[10px] text-stone-600 mb-1">木にかかるイメージ</span>
             <div class="bg-white p-2 pb-3 rounded-xs shadow-polaroid border border-stone-200 w-28 text-center rotate-1">
-              <img :src="selectedImage" alt="preview" class="w-full h-20 object-cover rounded-2xs" />
+              <img :src="selectedImage" alt="preview" referrerpolicy="no-referrer" class="w-full h-20 object-cover rounded-2xs" />
               <p class="mt-1 text-[10px] font-medium text-stone-700 truncate">
                 {{ caption || 'タイトル' }}
               </p>
