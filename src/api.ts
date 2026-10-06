@@ -87,3 +87,6 @@ export const removeMember = (id: string) => request<AppState>('POST', '/api/memb
 
 export const setMemberAdmin = (id: string, admin: boolean) =>
   request<AppState>('POST', '/api/members/admin', { id, admin });
+
+// 本人が家族から抜ける
+export const leaveFamily = () => request<void>('POST', '/api/members/leave');

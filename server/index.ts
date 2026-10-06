@@ -367,6 +367,16 @@ function removeMember(me: User, body: any) {
   q.deleteUserSubs.run(target.id);
 }
 
+// 本人が家族から抜ける。自分が最後の管理者なら、次のメンバーに管理者を引き継ぐ
+function leaveFamily(me: User) {
+  if (me.is_admin) {
+    const next = q.members.all(me.family_id).find((u) => u.id !== me.id);
+    if (next) q.setAdmin.run(1, next.id);
+  }
+  q.removeUser.run(me.id);
+  q.deleteUserSubs.run(me.id);
+}
+
 function setMemberAdmin(me: User, body: any) {
   requireAdmin(me);
   const target = q.userById.get(str(body.id, 'id', 64), me.family_id);
@@ -444,6 +454,9 @@ async function route(req: Request): Promise<Response> {
       setMemberAdmin(me, await json(req));
       return Response.json(state(me));
     }
+    case 'POST /api/members/leave':
+      leaveFamily(auth(req));
+      return new Response(null, { status: 204 });
   }
   throw new HttpError(404, 'not found');
 }

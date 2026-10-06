@@ -12,7 +12,7 @@ import MemberDetailModal from './components/MemberDetailModal.vue';
 import DemoControlPanel from './components/DemoControlPanel.vue';
 import InfoModal from './components/InfoModal.vue';
 import JoinScreen from './components/JoinScreen.vue';
-import { fetchState, waterTree, sendNudge, removeMember, setMemberAdmin, type AppState } from './api';
+import { fetchState, waterTree, sendNudge, removeMember, setMemberAdmin, leaveFamily, clearToken, type AppState } from './api';
 import { authed, describeError } from './session';
 import type { TreeState, FamilyMember, TreeArtifact } from './types';
 
@@ -171,6 +171,20 @@ const handleToggleAdmin = async (m: FamilyMember) => {
   }
 };
 
+const handleLeaveFamily = async () => {
+  if (!window.confirm('この家族から抜けますか？')) return;
+  try {
+    await leaveFamily();
+  } catch (e) {
+    showToast(describeError(e));
+    return;
+  }
+  clearToken();
+  authed.value = false;
+  loaded.value = false;
+  selectedMember.value = null;
+};
+
 const unwateredMembers = computed(() =>
   members.value.filter((m) => !m.wateredToday && !m.isCurrentUser)
 );
@@ -272,6 +286,7 @@ const unwateredMembers = computed(() =>
       @send-heart="handleSendHeart"
       @remove-member="handleRemoveMember"
       @toggle-admin="handleToggleAdmin"
+      @leave-family="handleLeaveFamily"
     />
 
     <InfoModal

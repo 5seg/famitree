@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { X, Droplets, Flame, Heart, Crown, UserMinus } from 'lucide-vue-next';
+import { X, Droplets, Flame, Heart, Crown, UserMinus, LogOut } from 'lucide-vue-next';
 import { useModalA11y } from '../composables/useModalA11y';
 import type { FamilyMember } from '../types';
 
@@ -13,6 +13,7 @@ const emit = defineEmits<{
   (e: 'sendHeart', member: FamilyMember): void;
   (e: 'removeMember', member: FamilyMember): void;
   (e: 'toggleAdmin', member: FamilyMember): void;
+  (e: 'leaveFamily', member: FamilyMember): void;
 }>();
 
 useModalA11y(() => props.member !== null, () => emit('close'));
@@ -110,6 +111,20 @@ useModalA11y(() => props.member !== null, () => emit('close'));
             <UserMinus class="w-3.5 h-3.5" />
             <span>家族から外す</span>
           </button>
+        </div>
+
+        <!-- 自分の退出 -->
+        <div v-if="member.isCurrentUser" class="mt-4 w-full pt-4 border-t border-stone-100">
+          <button
+            @click="$emit('leaveFamily', member)"
+            class="w-full py-2.5 px-4 rounded-2xl bg-stone-100 hover:bg-rose-50 border border-stone-200 hover:border-rose-200 text-stone-600 hover:text-rose-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <LogOut class="w-3.5 h-3.5" />
+            <span>家族を抜ける</span>
+          </button>
+          <p class="mt-1.5 text-[10px] text-stone-400 leading-relaxed">
+            抜けたあともう一度招待コードで参加できます。写真などの家族の記録は残ります。
+          </p>
         </div>
       </div>
     </div>
