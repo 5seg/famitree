@@ -12,6 +12,7 @@ import MemberDetailModal from './components/MemberDetailModal.vue';
 import DemoControlPanel from './components/DemoControlPanel.vue';
 import InfoModal from './components/InfoModal.vue';
 import { initialFamilyMembers, initialArtifacts } from './mockData';
+import { isAllowedImageUrl } from './types';
 import type { TreeState, FamilyMember, TreeArtifact } from './types';
 
 // State
@@ -79,12 +80,27 @@ const handleWaterTree = () => {
 const handleAddArtifact = (
   newArt: Omit<TreeArtifact, 'id' | 'date' | 'coords'>
 ) => {
+  const clip = (str: string, n: number) =>
+    Array.from(str.trim()).slice(0, n).join('');
+  const content =
+    newArt.type === 'photo' ? newArt.content : clip(newArt.content, 20);
+  if (
+    newArt.type === 'photo' ? !isAllowedImageUrl(content) : !content
+  ) {
+    showToast('⚠️ 追加できない内容です');
+    return;
+  }
   const randomX = Math.floor(Math.random() * 50) + 25;
   const randomY = Math.floor(Math.random() * 35) + 35;
   const randomRotate = Math.floor(Math.random() * 12) - 6;
 
   const item: TreeArtifact = {
     ...newArt,
+    author: currentUser.value.name,
+    authorAvatar: currentUser.value.avatar,
+    authorRole: currentUser.value.role,
+    title: newArt.type === 'photo' ? clip(newArt.title, 24) : newArt.title,
+    content,
     id: `art-${Date.now()}`,
     date: 'たった今',
     coords: { x: randomX, y: randomY, rotate: randomRotate },

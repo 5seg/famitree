@@ -23,3 +23,12 @@ export interface TreeArtifact {
   content: string; // Image URL or Text message
   coords: { x: number; y: number; rotate: number }; // Percentage position on tree
 }
+
+export const isAllowedImageUrl = (url: string): boolean => {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && ['images.unsplash.com', 'famitree-api.5seg.top'].includes(u.hostname);
+  } catch {
+    return false;
+  }
+};
