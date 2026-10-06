@@ -155,6 +155,25 @@ function streakOf(datesDesc: string[], today: string): number {
   return n;
 }
 
+// 家族の連続日数は「その日に在籍していた全員が水やりした日」が連続した数。
+// 今日がまだ全員そろっていなくても、その日は未確定なので昨日までの記録を保つ。
+// ponytail: 日ごとに1件ずつ遡って数える。家族は小さいので十分。長寿家族が増えたら SQL の再帰でまとめる
+function familyStreak(familyId: string, today: string): number {
+  const watered = new Map(q.dailyWaterers.all(familyId).map((r) => [r.d, r.n]));
+  if (!watered.size) return 0;
+  const spans = q.memberSpans.all(familyId);
+  const required = (d: string) => spans.filter((s) => s.joined <= d && (!s.left || s.left > d)).length;
+  let streak = 0;
+  for (let i = 0; ; i++) {
+    const d = jstDate(Date.now() - i * DAY_MS);
+    const need = required(d);
+    if (!need) break; // その日はまだメンバーがいない
+    if ((watered.get(d) ?? 0) >= need) streak++;
+    else if (i > 0) break; // 今日が未完了なだけなら、昨日までの連続を見せる
+  }
+  return streak;
+}
+
 // 最終水やりからの経過日数で決まる状態。誰かが水やりすれば冬眠から即復活する
 function treeStatus(lastDate: string | null, today: string) {
   if (!lastDate) return 'growing';
@@ -186,6 +205,8 @@ const q = {
   lastFamilyDate: db.query<{ d: string | null }, [string]>('SELECT MAX(watered_date) AS d FROM watering_logs WHERE family_id = ?'),
   members: db.query<User, [string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE family_id = ? AND removed_at IS NULL ORDER BY created_at, rowid'),
   userDates: db.query<{ watered_date: string }, [string]>('SELECT watered_date FROM watering_logs WHERE user_id = ? ORDER BY watered_date DESC'),
+  dailyWaterers: db.query<{ d: string; n: number }, [string]>('SELECT watered_date AS d, COUNT(DISTINCT user_id) AS n FROM watering_logs WHERE family_id = ? GROUP BY watered_date'),
+  memberSpans: db.query<{ joined: string; left: string | null }, [string]>(`SELECT date(created_at, '+9 hours') AS joined, CASE WHEN removed_at IS NOT NULL THEN date(removed_at, '+9 hours') END AS left FROM users WHERE family_id = ?`),
   artifacts: db.query<any, [string]>(`
     SELECT a.*, u.name AS author, u.avatar AS author_avatar, u.role AS author_role
     FROM artifacts a JOIN users u ON u.id = a.user_id
@@ -206,9 +227,8 @@ const q = {
 // 水やりが無いまま日が経つと tree_status / streak_days が変わるので、読み出し時に保存値を更新する（日次バッチの代わり）
 function refreshTree(familyId: string, today: string): Family {
   const f = q.family.get(familyId)!;
-  const last = q.lastFamilyDate.get(familyId)!.d;
-  const status = treeStatus(last, today);
-  const streak = last && daysBetween(last, today) <= 1 ? f.streak_days : 0;
+  const status = treeStatus(q.lastFamilyDate.get(familyId)!.d, today);
+  const streak = familyStreak(familyId, today);
   if (status !== f.tree_status || streak !== f.streak_days) {
     q.updateTree.run(f.tree_level, f.exp, status, streak, f.id);
     return { ...f, tree_status: status, streak_days: streak };
@@ -282,12 +302,11 @@ const createFamily = db.transaction((body: any) => {
 
 const water = db.transaction((me: User) => {
   const today = jstDate();
-  const prev = q.lastFamilyDate.get(me.family_id)!.d;
   if (!q.insertWatering.run(crypto.randomUUID(), me.id, me.family_id, today).changes) return;
   q.touchUser.run(me.id);
   const f = q.family.get(me.family_id)!;
-  // 家族の連続日数は、その日の最初の水やりでだけ進める
-  const streak = prev === today ? f.streak_days : prev && daysBetween(prev, today) === 1 ? f.streak_days + 1 : 1;
+  // 連続日数は、その日の水やりが全員そろったときだけ進む
+  const streak = familyStreak(me.family_id, today);
   const exp = f.exp + 30;
   q.updateTree.run(f.tree_level + Math.floor(exp / 100), exp % 100, 'thriving', streak, f.id);
 });
