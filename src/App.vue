@@ -185,6 +185,14 @@ const handleLeaveFamily = async () => {
   selectedMember.value = null;
 };
 
+const handleLogout = () => {
+  clearToken();
+  authed.value = false;
+  loaded.value = false;
+  selectedMember.value = null;
+  isInfoModalOpen.value = false;
+};
+
 const unwateredMembers = computed(() =>
   members.value.filter((m) => !m.wateredToday && !m.isCurrentUser)
 );
@@ -294,6 +302,7 @@ const unwateredMembers = computed(() =>
       :family-name="familyName"
       :invite-code="inviteCode"
       @toast="showToast"
+      @logout="handleLogout"
       @close="isInfoModalOpen = false"
     />
 

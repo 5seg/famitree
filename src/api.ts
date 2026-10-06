@@ -90,3 +90,6 @@ export const setMemberAdmin = (id: string, admin: boolean) =>
 
 // 本人が家族から抜ける
 export const leaveFamily = () => request<void>('POST', '/api/members/leave');
+
+// サーバ側でトークンを失効させてログアウト（家族には残る）
+export const logout = () => request<void>('POST', '/api/logout');

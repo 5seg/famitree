@@ -70,6 +70,7 @@ bun run start:api
 | `PORT` | `3000` | 待ち受けポート |
 | `DATA_DIR` | `server/data` | SQLite と `uploads/` の保存先 |
 | `PUBLIC_URL` | `https://famitree-api.5seg.top` | 写真 URL の前に付けるオリジン |
+| `UPLOAD_SIGNING_KEY` | (32バイト以上の乱数) | 写真の署名付き URL 用 HMAC 鍵。未設定なら起動時に一時生成 |
 | `ALLOWED_ORIGINS` | `https://famitree.pages.dev` | CORS で許可するフロントのオリジン (カンマ区切り。`https://*.famitree.pages.dev` でプレビュー URL も許可) |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | | 未設定なら Web Push は無効 |
 | `VAPID_SUBJECT` | `https://famitree-api.5seg.top` | VAPID の連絡先 |
