@@ -8,7 +8,13 @@ const DATA_DIR = process.env.DATA_DIR ?? join(import.meta.dir, 'data');
 const UPLOAD_DIR = join(DATA_DIR, 'uploads');
 // 本番では https://famitree-api.5seg.top を設定。フロントが別オリジンなので画像URLを絶対化するため
 const PUBLIC_URL = process.env.PUBLIC_URL ?? '';
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:5173').split(',');
+// `https://*.famitree.pages.dev` のようにサブドメインのワイルドカードも書ける (Pages のプレビュー用)。認証は Cookie ではなく Bearer token なので許可しても CSRF にならない
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:5173').split(',').map((o) => o.trim());
+const originAllowed = (origin: string) =>
+  ALLOWED_ORIGINS.some((a) => {
+    const i = a.indexOf('*.');
+    return i < 0 ? a === origin : origin.startsWith(a.slice(0, i)) && origin.endsWith(a.slice(i + 1)) && !origin.slice(a.slice(0, i).length, -a.slice(i + 1).length).includes('/');
+  });
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 
 const pushEnabled = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
@@ -387,7 +393,7 @@ async function route(req: Request): Promise<Response> {
 
 function cors(req: Request, res: Response) {
   const origin = req.headers.get('origin');
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+  if (origin && originAllowed(origin)) {
     res.headers.set('access-control-allow-origin', origin);
     res.headers.set('vary', 'origin');
   }
