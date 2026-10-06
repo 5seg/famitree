@@ -25,29 +25,42 @@ const db = new Database(join(DATA_DIR, 'famitree.db'), { create: true, strict: t
 db.run('PRAGMA journal_mode = WAL');
 db.run('PRAGMA foreign_keys = ON');
 db.run(`
+-- 家族グループ
 CREATE TABLE IF NOT EXISTS families (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  level INTEGER NOT NULL DEFAULT 1,
+  tree_level INTEGER DEFAULT 1,
+  tree_status TEXT DEFAULT 'growing', -- 'thriving' | 'growing' | 'wilting' | 'hibernating'
+  streak_days INTEGER DEFAULT 0,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  -- 以下は仕様への追加
   exp INTEGER NOT NULL DEFAULT 0,
-  invite_code TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  invite_code TEXT NOT NULL UNIQUE
 );
+-- ユーザー
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  family_id TEXT NOT NULL REFERENCES families(id),
+  family_id TEXT NOT NULL,
   name TEXT NOT NULL,
+  avatar_url TEXT,
+  last_watered_at DATETIME,
+  -- 以下は仕様への追加
   role TEXT NOT NULL,
-  avatar TEXT NOT NULL,
+  avatar TEXT NOT NULL, -- 絵文字アバター
   token_hash TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (family_id) REFERENCES families(id)
 );
+-- 水やりログ
 CREATE TABLE IF NOT EXISTS watering_logs (
-  user_id TEXT NOT NULL REFERENCES users(id),
-  family_id TEXT NOT NULL REFERENCES families(id),
-  watered_date TEXT NOT NULL, -- JST 'YYYY-MM-DD'
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (user_id, watered_date)
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  family_id TEXT NOT NULL,
+  watered_date TEXT NOT NULL, -- 'YYYY-MM-DD' (JST)
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (family_id) REFERENCES families(id),
+  UNIQUE (user_id, watered_date) -- 1日1回
 );
 CREATE INDEX IF NOT EXISTS watering_logs_family ON watering_logs (family_id, watered_date);
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -78,7 +91,7 @@ CREATE TABLE IF NOT EXISTS nudges (
 `);
 
 type User = { id: string; family_id: string; name: string; role: string; avatar: string };
-type Family = { id: string; name: string; level: number; exp: number; invite_code: string };
+type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string };
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -122,7 +135,7 @@ function streakOf(datesDesc: string[], today: string): number {
   return n;
 }
 
-// 保存せず最終水やりからの経過日数で決める。誰かが水やりすれば冬眠から即復活する
+// 最終水やりからの経過日数で決まる状態。誰かが水やりすれば冬眠から即復活する
 function treeStatus(lastDate: string | null, today: string) {
   if (!lastDate) return 'growing';
   const d = daysBetween(lastDate, today);
@@ -143,19 +156,20 @@ function displayDate(createdAtUtc: string, today: string): string {
 
 const q = {
   userByToken: db.query<User, [string]>('SELECT id, family_id, name, role, avatar FROM users WHERE token_hash = ?'),
-  family: db.query<Family, [string]>('SELECT id, name, level, exp, invite_code FROM families WHERE id = ?'),
-  familyByInvite: db.query<Family, [string]>('SELECT id, name, level, exp, invite_code FROM families WHERE invite_code = ?'),
+  family: db.query<Family, [string]>('SELECT * FROM families WHERE id = ?'),
+  familyByInvite: db.query<Family, [string]>('SELECT * FROM families WHERE invite_code = ?'),
+  lastFamilyDate: db.query<{ d: string | null }, [string]>('SELECT MAX(watered_date) AS d FROM watering_logs WHERE family_id = ?'),
   members: db.query<User, [string]>('SELECT id, family_id, name, role, avatar FROM users WHERE family_id = ? ORDER BY created_at, rowid'),
   userDates: db.query<{ watered_date: string }, [string]>('SELECT watered_date FROM watering_logs WHERE user_id = ? ORDER BY watered_date DESC'),
-  familyDates: db.query<{ watered_date: string }, [string]>('SELECT DISTINCT watered_date FROM watering_logs WHERE family_id = ? ORDER BY watered_date DESC'),
   artifacts: db.query<any, [string]>(`
     SELECT a.*, u.name AS author, u.avatar AS author_avatar, u.role AS author_role
     FROM artifacts a JOIN users u ON u.id = a.user_id
     WHERE a.family_id = ? ORDER BY a.created_at DESC, a.rowid DESC LIMIT 20`),
   insertFamily: db.query('INSERT INTO families (id, name, invite_code) VALUES (?, ?, ?)'),
   insertUser: db.query('INSERT INTO users (id, family_id, name, role, avatar, token_hash) VALUES (?, ?, ?, ?, ?, ?)'),
-  insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (user_id, family_id, watered_date) VALUES (?, ?, ?)'),
-  updateExp: db.query('UPDATE families SET level = ?, exp = ? WHERE id = ?'),
+  insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (id, user_id, family_id, watered_date) VALUES (?, ?, ?, ?)'),
+  touchUser: db.query('UPDATE users SET last_watered_at = CURRENT_TIMESTAMP WHERE id = ?'),
+  updateTree: db.query('UPDATE families SET tree_level = ?, exp = ?, tree_status = ?, streak_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
   insertArtifact: db.query('INSERT INTO artifacts (id, family_id, user_id, type, title, content, x, y, rotate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   upsertSub: db.query(`INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth) VALUES (?, ?, ?, ?)
     ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`),
@@ -164,10 +178,22 @@ const q = {
   insertNudge: db.query('INSERT OR IGNORE INTO nudges (from_user, to_user, kind, sent_date) VALUES (?, ?, ?, ?)'),
 };
 
+// 水やりが無いまま日が経つと tree_status / streak_days が変わるので、読み出し時に保存値を更新する（日次バッチの代わり）
+function refreshTree(familyId: string, today: string): Family {
+  const f = q.family.get(familyId)!;
+  const last = q.lastFamilyDate.get(familyId)!.d;
+  const status = treeStatus(last, today);
+  const streak = last && daysBetween(last, today) <= 1 ? f.streak_days : 0;
+  if (status !== f.tree_status || streak !== f.streak_days) {
+    q.updateTree.run(f.tree_level, f.exp, status, streak, f.id);
+    return { ...f, tree_status: status, streak_days: streak };
+  }
+  return f;
+}
+
 function state(me: User) {
   const today = jstDate();
-  const family = q.family.get(me.family_id)!;
-  const familyDates = q.familyDates.all(family.id).map((r) => r.watered_date);
+  const family = refreshTree(me.family_id, today);
   const members = q.members.all(family.id).map((u, i) => {
     const dates = q.userDates.all(u.id).map((r) => r.watered_date);
     // プライバシー: 時刻は返さず、今日水やりしたかどうかだけ返す
@@ -197,10 +223,10 @@ function state(me: User) {
     family: {
       name: family.name,
       inviteCode: family.invite_code,
-      level: family.level,
+      level: family.tree_level,
       exp: family.exp,
-      treeState: treeStatus(familyDates[0] ?? null, today),
-      streak: streakOf(familyDates, today),
+      treeState: family.tree_status,
+      streak: family.streak_days,
     },
     members,
     artifacts,
@@ -227,11 +253,15 @@ const createFamily = db.transaction((body: any) => {
 });
 
 const water = db.transaction((me: User) => {
-  const { changes } = q.insertWatering.run(me.id, me.family_id, jstDate());
-  if (!changes) return;
+  const today = jstDate();
+  const prev = q.lastFamilyDate.get(me.family_id)!.d;
+  if (!q.insertWatering.run(crypto.randomUUID(), me.id, me.family_id, today).changes) return;
+  q.touchUser.run(me.id);
   const f = q.family.get(me.family_id)!;
+  // 家族の連続日数は、その日の最初の水やりでだけ進める
+  const streak = prev === today ? f.streak_days : prev && daysBetween(prev, today) === 1 ? f.streak_days + 1 : 1;
   const exp = f.exp + 30;
-  q.updateExp.run(f.level + Math.floor(exp / 100), exp % 100, f.id);
+  q.updateTree.run(f.tree_level + Math.floor(exp / 100), exp % 100, 'thriving', streak, f.id);
 });
 
 function randomCoords() {
