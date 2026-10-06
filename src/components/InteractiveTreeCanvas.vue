@@ -192,6 +192,7 @@ const currentTheme = computed(() => stateThemes[props.treeState]);
               <img
                 :src="artifact.content"
                 :alt="artifact.title"
+                referrerpolicy="no-referrer"
                 class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 loading="lazy"
               />

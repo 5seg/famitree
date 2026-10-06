@@ -172,7 +172,7 @@ const handleSubmit = async () => {
           <input
             type="text"
             v-model="caption"
-            maxlength="30"
+            maxlength="24"
             class="w-full px-3 py-2 rounded-xl bg-white border border-stone-200 text-xs focus:outline-emerald-500"
             placeholder="例: 夕暮れの空、今日のお弁当"
           />

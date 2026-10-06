@@ -275,7 +275,7 @@ async function addArtifact(me: User, req: Request) {
     const file = form.get('file');
     if (!(file instanceof File)) throw new HttpError(400, 'file is required');
     if (file.size > MAX_PHOTO_BYTES) throw new HttpError(413, 'photo is too large (max 5MB)');
-    const title = str(form.get('title') || '日常のひとこま', 'title', 30);
+    const title = str(form.get('title') || '日常のひとこま', 'title', 24);
     const bytes = new Uint8Array(await file.arrayBuffer());
     // クライアントで JPEG に再エンコードして送る前提。中身で判定し Content-Type は信用しない
     if (!(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)) throw new HttpError(415, 'photo must be JPEG');

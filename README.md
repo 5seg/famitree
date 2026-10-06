@@ -75,6 +75,7 @@ bun run start:api
 | `VAPID_SUBJECT` | `https://famitree-api.5seg.top` | VAPID の連絡先 |
 
 フロント側は Pages のビルド時に `VITE_API_BASE=https://famitree-api.5seg.top` を設定する。リバースプロキシのボディサイズ上限は 6MB 以上にしておく (写真は最大 5MB)。
+API のドメインを変える場合は `public/_headers` の CSP (`img-src` と `connect-src`) も合わせて変更する。
 
 ## オープンソースライセンス表示 (Third-Party Licenses)
 
