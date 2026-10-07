@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { BlockList, isIP } from 'node:net';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -139,7 +139,8 @@ db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
   GROUP BY u.family_id
 )`);
 
-type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number; token_expires_at: string | null };
+type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number };
+type AuthUser = User & { token_expires_at: string | null };
 type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string };
 
 class HttpError extends Error {
@@ -226,7 +227,7 @@ function displayDate(createdAtUtc: string, today: string): string {
 }
 
 const q = {
-  userByToken: db.query<User, [string]>('SELECT id, family_id, name, role, avatar, is_admin, token_expires_at FROM users WHERE token_hash = ? AND removed_at IS NULL'),
+  userByToken: db.query<AuthUser, [string]>('SELECT id, family_id, name, role, avatar, is_admin, token_expires_at FROM users WHERE token_hash = ? AND removed_at IS NULL'),
   family: db.query<Family, [string]>('SELECT * FROM families WHERE id = ?'),
   familyByInvite: db.query<Family, [string]>('SELECT * FROM families WHERE invite_code = ?'),
   userById: db.query<User, [string, string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE id = ? AND family_id = ? AND removed_at IS NULL'),
@@ -361,6 +362,23 @@ async function sanitizePhoto(bytes: Uint8Array): Promise<Buffer> {
       .toBuffer();
   } catch {
     throw new HttpError(415, 'photo must be a valid JPEG');
+  }
+}
+
+// 導入前にアップロードされた写真の EXIF(GPS等) を除去する。メタデータが残るものだけ再エンコードするので再実行しても劣化しない
+async function stripExistingPhotos() {
+  for (const name of readdirSync(UPLOAD_DIR)) {
+    if (!/^[0-9a-f-]{36}\.jpg$/.test(name)) continue;
+    const path = join(UPLOAD_DIR, name);
+    try {
+      const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
+      const meta = await sharp(bytes, { limitInputPixels: MAX_PHOTO_PIXELS }).metadata();
+      if (!meta.exif && !meta.icc && !meta.xmp && !meta.iptc) continue;
+      await Bun.write(`${path}.tmp`, await sanitizePhoto(bytes));
+      renameSync(`${path}.tmp`, path);
+    } catch (e) {
+      console.error('strip failed', name, e);
+    }
   }
 }
 
@@ -622,6 +640,8 @@ function cors(req: Request, res: Response) {
   res.headers.set('content-security-policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   return res;
 }
+
+await stripExistingPhotos();
 
 const server = Bun.serve({
   port: PORT,
