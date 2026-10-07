@@ -31,11 +31,12 @@ const UPLOAD_SIGNING_KEY = process.env.UPLOAD_SIGNING_KEY
     console.warn('UPLOAD_SIGNING_KEY is not set; using an ephemeral key (photo URLs change on restart)');
     return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
   })();
-const UPLOAD_URL_TTL = 3600; // 署名付き写真 URL の有効期限（秒）
+const UPLOAD_URL_TTL = 12 * 3600; // 署名付き写真 URL の有効期限（秒）
+const UPLOAD_URL_STEP = 3600; // exp を丸める単位。同じ時間帯は同じ URL になりブラウザキャッシュが効く
 const uploadSig = (path: string, exp: number) =>
   createHmac('sha256', UPLOAD_SIGNING_KEY).update(`${path}.${exp}`).digest('base64url');
 const signedUploadUrl = (path: string) => {
-  const exp = Math.floor(Date.now() / 1000) + UPLOAD_URL_TTL;
+  const exp = Math.floor(Date.now() / 1000 / UPLOAD_URL_STEP) * UPLOAD_URL_STEP + UPLOAD_URL_TTL;
   return `${PUBLIC_URL}${path}?exp=${exp}&sig=${uploadSig(path, exp)}`;
 };
 
@@ -247,13 +248,13 @@ const q = {
   insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (id, user_id, family_id, watered_date) VALUES (?, ?, ?, ?)'),
   touchUser: db.query('UPDATE users SET last_watered_at = CURRENT_TIMESTAMP WHERE id = ?'),
   extendToken: db.query(`UPDATE users SET token_expires_at = datetime('now', '+${TOKEN_TTL_DAYS} days') WHERE id = ?`),
-  expireToken: db.query("UPDATE users SET token_expires_at = datetime('now', '-1 day') WHERE id = ?"),
   updateTree: db.query('UPDATE families SET tree_level = ?, exp = ?, tree_status = ?, streak_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
   insertArtifact: db.query('INSERT INTO artifacts (id, family_id, user_id, type, title, content, x, y, rotate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   upsertSub: db.query(`INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth) VALUES (?, ?, ?, ?)
     ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`),
   subsOf: db.query<{ endpoint: string; p256dh: string; auth: string }, [string]>('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?'),
-  subOwner: db.query<{ user_id: string }, [string]>('SELECT user_id FROM push_subscriptions WHERE endpoint = ?'),
+  subOwner: db.query<{ user_id: string }, [string]>(`SELECT s.user_id FROM push_subscriptions s JOIN users u ON u.id = s.user_id
+    WHERE s.endpoint = ? AND u.removed_at IS NULL AND u.token_expires_at > datetime('now')`),
   subEndpoints: db.query<{ endpoint: string }, [string]>('SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY rowid'),
   deleteSub: db.query('DELETE FROM push_subscriptions WHERE endpoint = ?'),
   insertNudge: db.query('INSERT OR IGNORE INTO nudges (from_user, to_user, kind, sent_date) VALUES (?, ?, ?, ?)'),
@@ -515,7 +516,7 @@ function auth(req: Request): User {
   const expires = user.token_expires_at ? Date.parse(user.token_expires_at + 'Z') : 0;
   const now = Date.now();
   if (!expires || expires <= now) throw new HttpError(401, 'unauthorized');
-  // スライディング延長。残り1日を切ったときだけ書き込み、更新を1日1回程度に抑える
+  // スライディング延長。最後の延長から1日以上経ったときだけ書き込み、更新を1日1回程度に抑える
   if (expires - now < TOKEN_TTL_MS - DAY_MS) q.extendToken.run(user.id);
   return user;
 }
@@ -575,7 +576,7 @@ async function route(req: Request): Promise<Response> {
       const endpoint = str(body.endpoint, 'endpoint', 1000);
       await assertPublicEndpoint(endpoint);
       const owner = q.subOwner.get(endpoint);
-      // 他人の endpoint を奪って通知を止められないようにする
+      // 有効な他人の endpoint を奪って通知を止められないようにする。失効・除名済みの持ち主なら静かに上書きする
       if (owner && owner.user_id !== me.id) throw new HttpError(409, 'endpoint already registered');
       if (!owner) {
         const mine = q.subEndpoints.all(me.id);
@@ -601,10 +602,6 @@ async function route(req: Request): Promise<Response> {
     }
     case 'POST /api/members/leave':
       leaveFamily(auth(req));
-      return new Response(null, { status: 204 });
-    case 'POST /api/logout':
-      // トークンを失効させる（この端末の会員証を無効化。家族には残る）
-      q.expireToken.run(auth(req).id);
       return new Response(null, { status: 204 });
   }
   throw new HttpError(404, 'not found');

@@ -3,7 +3,6 @@ import { ref, watch } from 'vue';
 import { X, ShieldCheck, Sparkles, MessageCircle, Link, Bell } from 'lucide-vue-next';
 import { useModalA11y } from '../composables/useModalA11y';
 import { isPushSupported, enablePush, isPushEnabled } from '../push';
-import { logout } from '../api';
 
 const props = defineProps<{
   isOpen: boolean;
@@ -14,7 +13,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'toast', msg: string): void;
-  (e: 'logout'): void;
 }>();
 
 useModalA11y(() => props.isOpen, () => emit('close'));
@@ -53,15 +51,6 @@ const shareInvite = async () => {
   } catch (e) {
     if ((e as DOMException).name !== 'AbortError') emit('toast', 'コピーできませんでした');
   }
-};
-
-const handleLogout = async () => {
-  try {
-    await logout();
-  } catch {
-    // すでに失効していても画面は戻す
-  }
-  emit('logout');
 };
 </script>
 
@@ -146,15 +135,8 @@ const handleLogout = async () => {
       </div>
 
       <button
-        @click="handleLogout"
-        class="w-full mt-4 py-2 rounded-2xl border border-stone-200 text-stone-500 hover:text-rose-700 hover:border-rose-200 font-semibold text-[11px] transition-colors cursor-pointer"
-      >
-        ログアウト
-      </button>
-
-      <button
         @click="$emit('close')"
-        class="w-full mt-2 py-2.5 rounded-2xl bg-stone-800 text-white font-semibold text-xs hover:bg-stone-900 transition-colors cursor-pointer"
+        class="w-full mt-4 py-2.5 rounded-2xl bg-stone-800 text-white font-semibold text-xs hover:bg-stone-900 transition-colors cursor-pointer"
       >
         とじる
       </button>

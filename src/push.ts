@@ -43,6 +43,16 @@ export const enablePush = async (): Promise<boolean> => {
   }
 };
 
+// ブラウザ側の購読を解除する（家族から抜けるとき。サーバ側の購読は leave 時に削除される）
+export const disablePush = async (): Promise<void> => {
+  try {
+    const registration = await navigator.serviceWorker?.getRegistration();
+    await (await registration?.pushManager.getSubscription())?.unsubscribe();
+  } catch (e) {
+    console.error('disablePush error:', e);
+  }
+};
+
 // すでに購読済みか
 export const isPushEnabled = async (): Promise<boolean> => {
   try {
