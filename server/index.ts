@@ -1,6 +1,10 @@
 import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { mkdirSync, readdirSync, renameSync } from 'node:fs';
+import { BlockList, isIP } from 'node:net';
 import { join } from 'node:path';
+import sharp from 'sharp';
 import webpush from 'web-push';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -16,6 +20,25 @@ const originAllowed = (origin: string) =>
     return i < 0 ? a === origin : origin.startsWith(a.slice(0, i)) && origin.endsWith(a.slice(i + 1)) && !origin.slice(a.slice(0, i).length, -a.slice(i + 1).length).includes('/');
   });
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+// デコード前に弾くピクセル上限。クライアントは長辺1600pxに縮小するので十分な余裕がある
+const MAX_PHOTO_PIXELS = 40_000_000;
+// 1ユーザーが登録できる Push 購読の上限。超過時は最古を削除して入替える
+const MAX_SUBS_PER_USER = 5;
+
+// 写真 URL の署名鍵。未設定なら起動時に一時鍵を生成する（再起動で URL が変わるので本番は必ず設定）
+const UPLOAD_SIGNING_KEY = process.env.UPLOAD_SIGNING_KEY
+  || (() => {
+    console.warn('UPLOAD_SIGNING_KEY is not set; using an ephemeral key (photo URLs change on restart)');
+    return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
+  })();
+const UPLOAD_URL_TTL = 12 * 3600; // 署名付き写真 URL の有効期限（秒）
+const UPLOAD_URL_STEP = 3600; // exp を丸める単位。同じ時間帯は同じ URL になりブラウザキャッシュが効く
+const uploadSig = (path: string, exp: number) =>
+  createHmac('sha256', UPLOAD_SIGNING_KEY).update(`${path}.${exp}`).digest('base64url');
+const signedUploadUrl = (path: string) => {
+  const exp = Math.floor(Date.now() / 1000 / UPLOAD_URL_STEP) * UPLOAD_URL_STEP + UPLOAD_URL_TTL;
+  return `${PUBLIC_URL}${path}?exp=${exp}&sig=${uploadSig(path, exp)}`;
+};
 
 const pushEnabled = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
 if (pushEnabled) {
@@ -54,6 +77,7 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL,
   avatar TEXT NOT NULL, -- 絵文字アバター
   token_hash TEXT NOT NULL UNIQUE,
+  token_expires_at DATETIME, -- スライディング有効期限。使うたび延長する
   is_admin INTEGER NOT NULL DEFAULT 0, -- 家族の管理者。除名と権限変更ができる
   removed_at DATETIME, -- 除名済み。行は残して写真や水やりの作者名を保つ
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -102,6 +126,11 @@ CREATE TABLE IF NOT EXISTS nudges (
 const userCols = db.query<{ name: string }, []>('PRAGMA table_info(users)').all().map((c) => c.name);
 if (!userCols.includes('is_admin')) db.run('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('removed_at')) db.run('ALTER TABLE users ADD COLUMN removed_at DATETIME');
+if (!userCols.includes('token_expires_at')) {
+  db.run('ALTER TABLE users ADD COLUMN token_expires_at DATETIME');
+  // 既存ユーザーは全員失効させないよう、移行時に TTL ぶん延長しておく
+  db.run("UPDATE users SET token_expires_at = datetime('now', '+90 days') WHERE token_expires_at IS NULL");
+}
 // 管理者がいない家族（既存データ）は、最初のメンバーを管理者にする
 db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
   SELECT MIN(u.rowid) FROM users u
@@ -111,6 +140,7 @@ db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
 )`);
 
 type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number };
+type AuthUser = User & { token_expires_at: string | null };
 type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string };
 
 class HttpError extends Error {
@@ -120,6 +150,9 @@ class HttpError extends Error {
 }
 
 const DAY_MS = 86_400_000;
+// トークンのスライディング有効期限（最終利用からこの日数）
+const TOKEN_TTL_DAYS = 90;
+const TOKEN_TTL_MS = TOKEN_TTL_DAYS * DAY_MS;
 const jstDate = (ms = Date.now()) => new Date(ms + 9 * 3_600_000).toISOString().slice(0, 10);
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
 
@@ -194,7 +227,7 @@ function displayDate(createdAtUtc: string, today: string): string {
 }
 
 const q = {
-  userByToken: db.query<User, [string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE token_hash = ? AND removed_at IS NULL'),
+  userByToken: db.query<AuthUser, [string]>('SELECT id, family_id, name, role, avatar, is_admin, token_expires_at FROM users WHERE token_hash = ? AND removed_at IS NULL'),
   family: db.query<Family, [string]>('SELECT * FROM families WHERE id = ?'),
   familyByInvite: db.query<Family, [string]>('SELECT * FROM families WHERE invite_code = ?'),
   userById: db.query<User, [string, string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE id = ? AND family_id = ? AND removed_at IS NULL'),
@@ -212,14 +245,18 @@ const q = {
     FROM artifacts a JOIN users u ON u.id = a.user_id
     WHERE a.family_id = ? ORDER BY a.created_at DESC, a.rowid DESC LIMIT 20`),
   insertFamily: db.query('INSERT INTO families (id, name, invite_code) VALUES (?, ?, ?)'),
-  insertUser: db.query('INSERT INTO users (id, family_id, name, role, avatar, token_hash, is_admin) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  insertUser: db.query(`INSERT INTO users (id, family_id, name, role, avatar, token_hash, token_expires_at, is_admin) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+${TOKEN_TTL_DAYS} days'), ?)`),
   insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (id, user_id, family_id, watered_date) VALUES (?, ?, ?, ?)'),
   touchUser: db.query('UPDATE users SET last_watered_at = CURRENT_TIMESTAMP WHERE id = ?'),
+  extendToken: db.query(`UPDATE users SET token_expires_at = datetime('now', '+${TOKEN_TTL_DAYS} days') WHERE id = ?`),
   updateTree: db.query('UPDATE families SET tree_level = ?, exp = ?, tree_status = ?, streak_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
   insertArtifact: db.query('INSERT INTO artifacts (id, family_id, user_id, type, title, content, x, y, rotate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   upsertSub: db.query(`INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth) VALUES (?, ?, ?, ?)
     ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`),
   subsOf: db.query<{ endpoint: string; p256dh: string; auth: string }, [string]>('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?'),
+  subOwner: db.query<{ user_id: string }, [string]>(`SELECT s.user_id FROM push_subscriptions s JOIN users u ON u.id = s.user_id
+    WHERE s.endpoint = ? AND u.removed_at IS NULL AND u.token_expires_at > datetime('now')`),
+  subEndpoints: db.query<{ endpoint: string }, [string]>('SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY rowid'),
   deleteSub: db.query('DELETE FROM push_subscriptions WHERE endpoint = ?'),
   insertNudge: db.query('INSERT OR IGNORE INTO nudges (from_user, to_user, kind, sent_date) VALUES (?, ?, ?, ?)'),
 };
@@ -262,7 +299,7 @@ function state(me: User) {
     authorRole: a.author_role,
     date: displayDate(a.created_at, today),
     title: a.title,
-    content: a.type === 'photo' ? PUBLIC_URL + a.content : a.content,
+    content: a.type === 'photo' ? signedUploadUrl(a.content) : a.content,
     coords: { x: a.x, y: a.y, rotate: a.rotate },
   }));
   return {
@@ -315,6 +352,36 @@ function randomCoords() {
   return [25 + Math.floor(Math.random() * 50), 35 + Math.floor(Math.random() * 35), Math.floor(Math.random() * 12) - 6];
 }
 
+// 受信画像をサーバ側でデコード→縮小→JPEG再エンコードする。爆弾・ポリグロット・EXIF(GPS等)をまとめて除去
+async function sanitizePhoto(bytes: Uint8Array): Promise<Buffer> {
+  try {
+    return await sharp(bytes, { limitInputPixels: MAX_PHOTO_PIXELS })
+      .rotate() // EXIF の向きを反映。メタデータは出力に引き継がない
+      .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+  } catch {
+    throw new HttpError(415, 'photo must be a valid JPEG');
+  }
+}
+
+// 導入前にアップロードされた写真の EXIF(GPS等) を除去する。メタデータが残るものだけ再エンコードするので再実行しても劣化しない
+async function stripExistingPhotos() {
+  for (const name of readdirSync(UPLOAD_DIR)) {
+    if (!/^[0-9a-f-]{36}\.jpg$/.test(name)) continue;
+    const path = join(UPLOAD_DIR, name);
+    try {
+      const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
+      const meta = await sharp(bytes, { limitInputPixels: MAX_PHOTO_PIXELS }).metadata();
+      if (!meta.exif && !meta.icc && !meta.xmp && !meta.iptc) continue;
+      await Bun.write(`${path}.tmp`, await sanitizePhoto(bytes));
+      renameSync(`${path}.tmp`, path);
+    } catch (e) {
+      console.error('strip failed', name, e);
+    }
+  }
+}
+
 async function addArtifact(me: User, req: Request) {
   const [x, y, rotate] = randomCoords();
   if (req.headers.get('content-type')?.startsWith('multipart/form-data')) {
@@ -324,10 +391,11 @@ async function addArtifact(me: User, req: Request) {
     if (file.size > MAX_PHOTO_BYTES) throw new HttpError(413, 'photo is too large (max 5MB)');
     const title = str(form.get('title') || '日常のひとこま', 'title', 24);
     const bytes = new Uint8Array(await file.arrayBuffer());
-    // クライアントで JPEG に再エンコードして送る前提。中身で判定し Content-Type は信用しない
+    // Content-Type は信用せず、JPEG マジックで早期拒否したうえで必ず再エンコードする
     if (!(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)) throw new HttpError(415, 'photo must be JPEG');
+    const jpeg = await sanitizePhoto(bytes);
     const name = `${crypto.randomUUID()}.jpg`;
-    await Bun.write(join(UPLOAD_DIR, name), bytes);
+    await Bun.write(join(UPLOAD_DIR, name), jpeg);
     q.insertArtifact.run(crypto.randomUUID(), me.family_id, me.id, 'photo', title, `/uploads/${name}`, x, y, rotate);
   } else {
     const body = await json(req);
@@ -336,17 +404,63 @@ async function addArtifact(me: User, req: Request) {
   }
 }
 
+// SSRF 対策: Push endpoint は公開 Push サービス想定なので、私網・ループバック・リンクローカル等を拒否する
+// ponytail: 検証時と送信時で DNS が変わる rebinding までは塞がない。厳密化するなら解決 IP に固定して接続する
+const blockedAddrs = new BlockList();
+for (const [net, prefix, family] of [
+  ['0.0.0.0', 8, 'ipv4'], ['10.0.0.0', 8, 'ipv4'], ['100.64.0.0', 10, 'ipv4'],
+  ['127.0.0.0', 8, 'ipv4'], ['169.254.0.0', 16, 'ipv4'], ['172.16.0.0', 12, 'ipv4'],
+  ['192.0.0.0', 24, 'ipv4'], ['192.0.2.0', 24, 'ipv4'], ['192.168.0.0', 16, 'ipv4'],
+  ['198.18.0.0', 15, 'ipv4'], ['198.51.100.0', 24, 'ipv4'], ['203.0.113.0', 24, 'ipv4'],
+  ['224.0.0.0', 4, 'ipv4'], ['240.0.0.0', 4, 'ipv4'],
+  ['::', 128, 'ipv6'], ['::1', 128, 'ipv6'], ['fc00::', 7, 'ipv6'],
+  ['fe80::', 10, 'ipv6'], ['ff00::', 8, 'ipv6'],
+] as const) {
+  blockedAddrs.addSubnet(net, prefix, family);
+}
+
+const isBlockedIp = (addr: string) => {
+  const s = addr.replace(/^\[|\]$/g, '');
+  return blockedAddrs.check(s, isIP(s) === 6 ? 'ipv6' : 'ipv4');
+};
+
+// 登録・送信の両方で検証し、内部向け endpoint を保存・送信させない
+async function assertPublicEndpoint(endpoint: string): Promise<void> {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new HttpError(400, 'invalid endpoint');
+  }
+  if (url.protocol !== 'https:') throw new HttpError(400, 'endpoint must be https');
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(host)) {
+    if (isBlockedIp(host)) throw new HttpError(400, 'endpoint host not allowed');
+    return;
+  }
+  const addrs = await lookup(host, { all: true }).catch(() => null);
+  if (!addrs?.length || addrs.some((a) => isBlockedIp(a.address))) {
+    throw new HttpError(400, 'endpoint host not allowed');
+  }
+}
+
 async function sendPush(userId: string, payload: { title: string; body: string }) {
   if (!pushEnabled) return;
   await Promise.all(
-    q.subsOf.all(userId).map((s) =>
-      webpush
+    q.subsOf.all(userId).map(async (s) => {
+      try {
+        await assertPublicEndpoint(s.endpoint);
+      } catch {
+        q.deleteSub.run(s.endpoint); // 既存の不正 endpoint は掃除する
+        return;
+      }
+      return webpush
         .sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, JSON.stringify(payload))
         .catch((e) => {
           if (e.statusCode === 404 || e.statusCode === 410) q.deleteSub.run(s.endpoint);
           else console.error('push failed', e.statusCode ?? e, e.body ?? '');
-        }),
-    ),
+        });
+    }),
   );
 }
 
@@ -417,6 +531,11 @@ function auth(req: Request): User {
   const token = req.headers.get('authorization')?.match(/^Bearer (.+)$/)?.[1];
   const user = token && q.userByToken.get(hashToken(token));
   if (!user) throw new HttpError(401, 'unauthorized');
+  const expires = user.token_expires_at ? Date.parse(user.token_expires_at + 'Z') : 0;
+  const now = Date.now();
+  if (!expires || expires <= now) throw new HttpError(401, 'unauthorized');
+  // スライディング延長。最後の延長から1日以上経ったときだけ書き込み、更新を1日1回程度に抑える
+  if (expires - now < TOKEN_TTL_MS - DAY_MS) q.extendToken.run(user.id);
   return user;
 }
 
@@ -426,10 +545,24 @@ async function route(req: Request): Promise<Response> {
 
   if (req.method === 'GET' && pathname.startsWith('/uploads/')) {
     const name = pathname.slice('/uploads/'.length);
-    // ponytail: 推測不能な UUID のファイル名だけで保護している（<img> に token を付けられないため）。必要になったら署名付きURLに
-    const file = /^[0-9a-f-]{36}\.jpg$/.test(name) && Bun.file(join(UPLOAD_DIR, name));
-    if (!file || !(await file.exists())) throw new HttpError(404, 'not found');
-    return new Response(file, { headers: { 'cache-control': 'public, max-age=31536000, immutable' } });
+    if (!/^[0-9a-f-]{36}\.jpg$/.test(name)) throw new HttpError(404, 'not found');
+    // <img> に Authorization を付けられないため、URL 側の HMAC 署名と有効期限で認可する
+    const params = new URL(req.url).searchParams;
+    const exp = Number(params.get('exp'));
+    const sig = params.get('sig') ?? '';
+    const expected = uploadSig(`/uploads/${name}`, exp);
+    const sigOk = sig.length === expected.length
+      && timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+    if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000) || !sigOk) {
+      throw new HttpError(403, 'forbidden');
+    }
+    const file = Bun.file(join(UPLOAD_DIR, name));
+    if (!(await file.exists())) throw new HttpError(404, 'not found');
+    // キャッシュ寿命を署名の残り時間に合わせる（immutable にすると失効後もブラウザキャッシュが返る）
+    const maxAge = Math.max(0, exp - Math.floor(Date.now() / 1000));
+    return new Response(file, {
+      headers: { 'cache-control': `private, max-age=${maxAge}`, 'x-content-type-options': 'nosniff' },
+    });
   }
 
   switch (key) {
@@ -458,7 +591,19 @@ async function route(req: Request): Promise<Response> {
     case 'POST /api/push/subscribe': {
       const me = auth(req);
       const body = await json(req);
-      q.upsertSub.run(str(body.endpoint, 'endpoint', 1000), me.id, str(body.keys?.p256dh, 'keys.p256dh', 200), str(body.keys?.auth, 'keys.auth', 100));
+      const endpoint = str(body.endpoint, 'endpoint', 1000);
+      await assertPublicEndpoint(endpoint);
+      const owner = q.subOwner.get(endpoint);
+      // 有効な他人の endpoint を奪って通知を止められないようにする。失効・除名済みの持ち主なら静かに上書きする
+      if (owner && owner.user_id !== me.id) throw new HttpError(409, 'endpoint already registered');
+      if (!owner) {
+        const mine = q.subEndpoints.all(me.id);
+        // 上限超過時は最古の購読を削除して入替（古い端末の残骸で新規登録できなくなるのを防ぐ）
+        if (mine.length >= MAX_SUBS_PER_USER) {
+          for (const s of mine.slice(0, mine.length - MAX_SUBS_PER_USER + 1)) q.deleteSub.run(s.endpoint);
+        }
+      }
+      q.upsertSub.run(endpoint, me.id, str(body.keys?.p256dh, 'keys.p256dh', 200), str(body.keys?.auth, 'keys.auth', 100));
       return new Response(null, { status: 204 });
     }
     case 'POST /api/nudge':
@@ -480,14 +625,23 @@ async function route(req: Request): Promise<Response> {
   throw new HttpError(404, 'not found');
 }
 
+// 全 API レスポンスに付けるセキュリティヘッダ。CORP は Pages からの画像読み込みを壊すので付けない
 function cors(req: Request, res: Response) {
   const origin = req.headers.get('origin');
   if (origin && originAllowed(origin)) {
     res.headers.set('access-control-allow-origin', origin);
     res.headers.set('vary', 'origin');
   }
+  res.headers.set('x-content-type-options', 'nosniff');
+  res.headers.set('x-frame-options', 'DENY');
+  res.headers.set('referrer-policy', 'no-referrer');
+  res.headers.set('permissions-policy', 'camera=(), microphone=(), geolocation=()');
+  res.headers.set('strict-transport-security', 'max-age=31536000; includeSubDomains');
+  res.headers.set('content-security-policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   return res;
 }
+
+await stripExistingPhotos();
 
 const server = Bun.serve({
   port: PORT,

@@ -12,6 +12,7 @@ import MemberDetailModal from './components/MemberDetailModal.vue';
 import DemoControlPanel from './components/DemoControlPanel.vue';
 import InfoModal from './components/InfoModal.vue';
 import JoinScreen from './components/JoinScreen.vue';
+import { disablePush } from './push';
 import { fetchState, waterTree, sendNudge, removeMember, setMemberAdmin, leaveFamily, clearToken, type AppState } from './api';
 import { authed, describeError } from './session';
 import type { TreeState, FamilyMember, TreeArtifact } from './types';
@@ -179,6 +180,7 @@ const handleLeaveFamily = async () => {
     showToast(describeError(e));
     return;
   }
+  await disablePush();
   clearToken();
   authed.value = false;
   loaded.value = false;
