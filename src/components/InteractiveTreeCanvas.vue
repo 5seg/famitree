@@ -46,11 +46,31 @@ const stateThemes = {
 
 const currentTheme = computed(() => stateThemes[props.treeState]);
 
-// アーティファクトを吊るす領域（キャンバス 340px に対する割合）
-const CANVAS_SIZE = 340;
-const HANG_AREA = { left: 0.1, right: 0.9, top: 0.16, bottom: 0.8 };
-// 吊り紐を含めた写真1枚の縦横比（高さ ÷ 幅）
-const CARD_ASPECT = 1.3;
+// 手で置いた吊り下げ位置（キャンバス 340px に対する %）。
+// 行・列で並べるとグリッドに見えるので、枝に沿って少し重なる程度に散らしてある。
+// string は吊り紐の長さ（em, 1em = カード幅 / 10）。長いほど低くぶら下がる
+const HANGERS = [
+  { x: 46, y: 30, rot: -3, scale: 1.0, string: 2.8 },
+  { x: 23, y: 44, rot: 6, scale: 0.98, string: 4.0 },
+  { x: 75, y: 43, rot: -6, scale: 0.98, string: 3.4 },
+  { x: 51, y: 61, rot: 2, scale: 1.04, string: 4.6 },
+  { x: 33, y: 21, rot: 4, scale: 0.9, string: 2.2 },
+  { x: 66, y: 22, rot: -5, scale: 0.9, string: 2.6 },
+  { x: 17, y: 33, rot: -8, scale: 0.9, string: 3.6 },
+  { x: 82, y: 32, rot: 8, scale: 0.9, string: 3.2 },
+  { x: 33, y: 53, rot: -4, scale: 0.96, string: 3.8 },
+  { x: 66, y: 54, rot: 5, scale: 0.96, string: 4.2 },
+  { x: 50, y: 75, rot: -1, scale: 1.0, string: 4.4 },
+  { x: 18, y: 58, rot: 9, scale: 0.88, string: 3.0 },
+  { x: 83, y: 57, rot: -9, scale: 0.88, string: 3.6 },
+  { x: 40, y: 69, rot: 3, scale: 0.96, string: 4.8 },
+  { x: 60, y: 70, rot: -3, scale: 0.96, string: 4.0 },
+  { x: 27, y: 67, rot: 7, scale: 0.9, string: 3.2 },
+  { x: 73, y: 68, rot: -7, scale: 0.9, string: 4.4 },
+  { x: 50, y: 42, rot: 1, scale: 0.92, string: 5.2 },
+  { x: 44, y: 37, rot: -2, scale: 0.88, string: 4.6 },
+  { x: 57, y: 36, rot: 3, scale: 0.88, string: 4.0 },
+];
 
 type PlacedArtifact = {
   artifact: TreeArtifact;
@@ -58,60 +78,34 @@ type PlacedArtifact = {
   top: number;
   width: number;
   rotate: number;
+  string: number;
   compact: boolean; // 小さいカードではキャプションを省いて写真だけ見せる
 };
 
-// 保存された座標は使わず、枚数から升目を決めて並べる。
-// ランダム配置のままだと写真が増えたときに重なって隠れてしまうため
+// 古いものから順に吊るしていく（新しい投稿で既存の写真が飛び跳ねないように）
 const placedArtifacts = computed<PlacedArtifact[]>(() => {
-  const items = [...props.artifacts].reverse(); // 古い順に描き、新しいものほど手前に来るようにする
+  const items = [...props.artifacts].reverse();
   if (items.length === 0) return [];
-
-  const areaW = CANVAS_SIZE * (HANG_AREA.right - HANG_AREA.left);
-  const areaH = CANVAS_SIZE * (HANG_AREA.bottom - HANG_AREA.top);
-
-  // 写真が一番大きく写る分割（列数）を選ぶ
-  let cols = 1;
-  let cardW = 0;
-  for (let c = 1; c <= items.length; c++) {
-    const rows = Math.ceil(items.length / c);
-    const w = Math.min((areaW / c) * 0.92, (areaH / rows / CARD_ASPECT) * 0.92);
-    if (w > cardW) {
-      cardW = w;
-      cols = c;
-    }
-  }
-  cardW = Math.min(cardW, 92); // 元の写真サイズより大きくしない
-
-  const rows = Math.ceil(items.length / cols);
-  const cellW = areaW / cols;
-  const cellH = areaH / rows;
-  const lastRowCount = items.length - (rows - 1) * cols;
+  // 枚数が増えるほどカードを小さくして、木が埋まっても識別できるようにする
+  const base = Math.min(78, (78 * Math.sqrt(6)) / Math.sqrt(items.length));
 
   return items.map((artifact, i) => {
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    // 最終行が埋まらないときは中央に寄せる
-    const offset = row === rows - 1 ? (cols - lastRowCount) / 2 : 0;
-    // 升目っぽさを消すための、保存座標から作る小さな揺らぎ
-    const jitterX = (((artifact.coords.x % 4) + 4) % 4 - 1.5) * cellW * 0.03;
-    const jitterY = (((artifact.coords.y % 3) + 3) % 3 - 1) * cellH * 0.02;
-    const x = CANVAS_SIZE * HANG_AREA.left + cellW * (col + offset + 0.5) + jitterX;
-    const y = CANVAS_SIZE * HANG_AREA.top + cellH * (row + 0.5) + jitterY;
-
-    // 木札は文字が入るぶん広めに。ただし升目からははみ出さない
-    const width =
+    const slot = HANGERS[i % HANGERS.length];
+    const width = Math.round(
       artifact.type === 'wood'
-        ? Math.min(cellW * 0.96, Math.max(76, cardW * 1.15))
-        : cardW;
+        ? Math.min(base * slot.scale * 1.12, 88) // 木札は文字が入るぶん広め
+        : base * slot.scale,
+    );
 
     return {
       artifact,
-      left: (x / CANVAS_SIZE) * 100,
-      top: (y / CANVAS_SIZE) * 100,
+      left: slot.x,
+      top: slot.y,
       width,
-      rotate: Math.max(-4, Math.min(4, artifact.coords.rotate * 0.7)),
-      compact: width < 72,
+      // 手置きの傾きに、写真ごとの小さな個体差を足す
+      rotate: Math.max(-10, Math.min(10, slot.rot + artifact.coords.rotate * 0.4)),
+      string: slot.string,
+      compact: width < 66,
     };
   });
 });
@@ -247,58 +241,63 @@ const placedArtifacts = computed<PlacedArtifact[]>(() => {
             top: `${item.top}%`,
             width: `${item.width}px`,
             fontSize: `${item.width / 10}px`,
-            rotate: `${item.rotate}deg`,
             translate: '-50% -50%',
           }"
           @click="$emit('selectArtifact', item.artifact)"
           class="absolute z-20 group cursor-pointer hover:z-40 hover:scale-110 active:scale-95 transition-all duration-200"
         >
-          <!-- Hanging string -->
-          <div class="w-[0.2em] min-w-px h-[2.6em] bg-stone-400/80 mx-auto -mb-[0.15em] shadow-xs group-hover:bg-amber-600 transition-colors" />
-
-          <!-- Polaroid Photo -->
+          <!-- Hanging knot & string -->
+          <div class="w-[0.5em] h-[0.5em] rounded-full bg-stone-500/70 mx-auto -mb-[0.25em] shadow-xs group-hover:bg-amber-600 transition-colors" />
           <div
-            v-if="item.artifact.type === 'photo'"
-            class="bg-white p-[0.12em] pb-[0.3em] rounded-xs shadow-polaroid border border-stone-200/90 text-center"
-          >
-            <div class="w-full h-[8em] bg-stone-100 overflow-hidden rounded-[0.15em] relative">
-              <img
-                :src="item.artifact.content"
-                :alt="item.artifact.title"
-                referrerpolicy="no-referrer"
-                class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                loading="lazy"
-              />
-              <span
-                v-if="!item.compact"
-                class="absolute top-[0.15em] left-[0.15em] text-[0.95em] leading-none bg-white/90 rounded-full px-[0.2em] py-[0.05em] shadow-xs"
-              >
-                {{ item.artifact.authorAvatar }}
-              </span>
-            </div>
-            <p
-              v-if="!item.compact"
-              class="mt-[0.2em] text-[1em] leading-tight font-medium text-stone-700 truncate px-[0.1em]"
+            class="w-[0.15em] min-w-px bg-stone-400/80 mx-auto -mb-[0.15em] shadow-xs group-hover:bg-amber-600 transition-colors"
+            :style="{ height: `${item.string}em` }"
+          />
+
+          <!-- Polaroid Photo / Wood Plaque。紐は垂直のまま、上端を支点に傾ける -->
+          <div :style="{ rotate: `${item.rotate}deg`, transformOrigin: 'top center' }">
+            <div
+              v-if="item.artifact.type === 'photo'"
+              class="bg-white p-[0.12em] pb-[0.3em] rounded-xs shadow-polaroid border border-stone-200/90 text-center"
             >
-              {{ item.artifact.title }}
-            </p>
-          </div>
-
-          <!-- Wood Carved Plaque -->
-          <div
-            v-else
-            class="wood-grain px-[0.3em] py-[0.25em] rounded-lg shadow-wooden border border-amber-900/40 text-amber-50 text-center"
-            :style="{ fontSize: `${Math.max(8, item.width / 10)}px` }"
-          >
-            <div class="flex items-center justify-center gap-[0.2em] mb-[0.1em]">
-              <span class="text-[1em]">{{ item.artifact.authorAvatar }}</span>
-              <span class="text-[0.95em] font-bold text-amber-200 tracking-wider">
-                {{ item.artifact.author }}
-              </span>
+              <div class="w-full h-[8em] bg-stone-100 overflow-hidden rounded-[0.15em] relative">
+                <img
+                  :src="item.artifact.content"
+                  :alt="item.artifact.title"
+                  referrerpolicy="no-referrer"
+                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  loading="lazy"
+                />
+                <span
+                  v-if="!item.compact"
+                  class="absolute top-[0.15em] left-[0.15em] text-[0.95em] leading-none bg-white/90 rounded-full px-[0.2em] py-[0.05em] shadow-xs"
+                >
+                  {{ item.artifact.authorAvatar }}
+                </span>
+              </div>
+              <p
+                v-if="!item.compact"
+                class="mt-[0.2em] text-[1em] leading-tight font-medium text-stone-700 truncate px-[0.1em]"
+              >
+                {{ item.artifact.title }}
+              </p>
             </div>
-            <p class="text-[1em] font-medium leading-tight line-clamp-2 text-stone-100 drop-shadow-xs">
-              {{ item.artifact.content }}
-            </p>
+
+            <!-- Wood Carved Plaque -->
+            <div
+              v-else
+              class="wood-grain px-[0.3em] py-[0.25em] rounded-lg shadow-wooden border border-amber-900/40 text-amber-50 text-center"
+              :style="{ fontSize: `${Math.max(8, item.width / 10)}px` }"
+            >
+              <div class="flex items-center justify-center gap-[0.2em] mb-[0.1em]">
+                <span class="text-[1em]">{{ item.artifact.authorAvatar }}</span>
+                <span class="text-[0.95em] font-bold text-amber-200 tracking-wider">
+                  {{ item.artifact.author }}
+                </span>
+              </div>
+              <p class="text-[1em] font-medium leading-tight line-clamp-2 text-stone-100 drop-shadow-xs">
+                {{ item.artifact.content }}
+              </p>
+            </div>
           </div>
         </div>
       </div>
