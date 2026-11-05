@@ -220,6 +220,28 @@ const handleLeaveFamily = async () => {
   selectedMember.value = null;
 };
 
+// 切り替えは今の家族に残るだけなので leaveFamily は呼ばない（招待コードで戻れる）
+const handleSwitchFamily = async () => {
+  if (
+    !window.confirm(
+      `${familyName.value}の木から離れて、別の家族を選びますか？\n今の家族と記録はそのまま残ります。招待コードで戻れます。`
+    )
+  )
+    return;
+  track('family_switch');
+  await disablePush();
+  clearToken();
+  authed.value = false;
+  loaded.value = false;
+  selectedArtifact.value = null;
+  selectedMember.value = null;
+  isWateringModalOpen.value = false;
+  isAddModalOpen.value = false;
+  isNudgeModalOpen.value = false;
+  isInfoModalOpen.value = false;
+  isAlbumModalOpen.value = false;
+};
+
 const unwateredMembers = computed(() =>
   members.value.filter((m) => !m.wateredToday && !m.isCurrentUser)
 );
@@ -253,7 +275,8 @@ const unwateredMembers = computed(() =>
           :family-name="familyName"
           :member-count="members.length"
           @open-info="isInfoModalOpen = true"
-          @switch-family="isInfoModalOpen = true"
+          @switch-family="handleSwitchFamily"
+          @leave-family="handleLeaveFamily"
         />
 
         <!-- Ambient Family Status Bar -->
