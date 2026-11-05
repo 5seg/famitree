@@ -101,9 +101,13 @@ for (const s of all) {
 
 console.log('\n## まとめ\n');
 console.log(`- 被験者: ${all.length} セッション（満開 ${a.length} / 止まった ${b.length}）`);
-console.log(`- 開いてから押すまでの中央値: 満開 ${sec(median(a.map((s) => s.pressMs ?? NaN)))}秒 / 止まった家族 ${sec(median(b.map((s) => s.pressMs ?? NaN)))}秒`);
-console.log(`- 水やり実行率: ${pct(all.filter((s) => s.watered).length, all.length)}`);
-console.log(`- 写真か一言を飾った人: ${pct(all.filter((s) => s.added > 0).length, all.length)}`);
-console.log(`- 家族にエールを送った人: ${pct(all.filter((s) => s.nudge > 0).length, all.length)}`);
-console.log(`- 1セッションあたり画面を開いた回数の中央値: ${median(all.map((s) => s.modals.length))}`);
+const stat = (label: string, f: (xs: (typeof all)[number][]) => string) =>
+  console.log(`- ${label}: 満開 ${f(a)} / 止まった ${f(b)}`);
+
+stat('開いてから押すまでの中央値', (xs) => `${sec(median(xs.map((s) => s.pressMs ?? NaN)))}秒`);
+stat('水やり実行率', (xs) => pct(xs.filter((s) => s.watered).length, xs.length));
+stat('写真か一言を飾った人', (xs) => pct(xs.filter((s) => s.added > 0).length, xs.length));
+stat('家族にエールを送った人', (xs) => pct(xs.filter((s) => s.nudge > 0).length, xs.length));
+stat('1セッションで開いた画面数の中央値', (xs) => String(median(xs.map((s) => s.modals.length))));
+console.log(`- 全体の水やり実行率: ${pct(all.filter((s) => s.watered).length, all.length)}`);
 console.log('');
