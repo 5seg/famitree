@@ -2,8 +2,9 @@ import { Database } from 'bun:sqlite';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { mkdirSync, readdirSync, renameSync } from 'node:fs';
+import { unlink } from 'node:fs/promises';
 import { BlockList, isIP } from 'node:net';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import sharp from 'sharp';
 import webpush from 'web-push';
 
@@ -154,6 +155,19 @@ db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
 type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number };
 type AuthUser = User & { token_expires_at: string | null };
 type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string };
+type ArtifactRow = {
+  id: string;
+  type: string;
+  title: string;
+  content: string;
+  x: number;
+  y: number;
+  rotate: number;
+  created_at: string;
+  author: string;
+  author_avatar: string;
+  author_role: string;
+};
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -238,6 +252,10 @@ function displayDate(createdAtUtc: string, today: string): string {
   return `${d}日前`;
 }
 
+// 木に吊るすのは投稿から24時間。過ぎたものはアルバムに移り、投稿から30日で消える
+const HANGING_HOURS = 24;
+const ALBUM_DAYS = 30;
+
 const q = {
   userByToken: db.query<AuthUser, [string]>('SELECT id, family_id, name, role, avatar, is_admin, token_expires_at FROM users WHERE token_hash = ? AND removed_at IS NULL'),
   family: db.query<Family, [string]>('SELECT * FROM families WHERE id = ?'),
@@ -252,10 +270,19 @@ const q = {
   userDates: db.query<{ watered_date: string }, [string]>('SELECT watered_date FROM watering_logs WHERE user_id = ? ORDER BY watered_date DESC'),
   dailyWaterers: db.query<{ d: string; n: number }, [string]>('SELECT watered_date AS d, COUNT(DISTINCT user_id) AS n FROM watering_logs WHERE family_id = ? GROUP BY watered_date'),
   memberSpans: db.query<{ joined: string; left: string | null }, [string]>(`SELECT date(created_at, '+9 hours') AS joined, CASE WHEN removed_at IS NOT NULL THEN date(removed_at, '+9 hours') END AS left FROM users WHERE family_id = ?`),
-  artifacts: db.query<any, [string]>(`
+  recentArtifacts: db.query<ArtifactRow, [string]>(`
     SELECT a.*, u.name AS author, u.avatar AS author_avatar, u.role AS author_role
     FROM artifacts a JOIN users u ON u.id = a.user_id
-    WHERE a.family_id = ? ORDER BY a.created_at DESC, a.rowid DESC LIMIT 20`),
+    WHERE a.family_id = ? AND a.created_at >= datetime('now', '-${ALBUM_DAYS} days')
+    ORDER BY a.created_at DESC, a.rowid DESC`),
+  expiredArtifacts: db.query<Pick<ArtifactRow, 'type' | 'content'>, [string]>(
+    `SELECT type, content FROM artifacts WHERE family_id = ? AND created_at < datetime('now', '-${ALBUM_DAYS} days')`),
+  deleteExpired: db.query(
+    `DELETE FROM artifacts WHERE family_id = ? AND created_at < datetime('now', '-${ALBUM_DAYS} days')`),
+  expiredArtifactsAll: db.query<Pick<ArtifactRow, 'type' | 'content'>, []>(
+    `SELECT type, content FROM artifacts WHERE created_at < datetime('now', '-${ALBUM_DAYS} days')`),
+  deleteExpiredAll: db.query(
+    `DELETE FROM artifacts WHERE created_at < datetime('now', '-${ALBUM_DAYS} days')`),
   insertFamily: db.query('INSERT INTO families (id, name, invite_code) VALUES (?, ?, ?)'),
   insertUser: db.query(`INSERT INTO users (id, family_id, name, role, avatar, token_hash, token_expires_at, is_admin) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+${TOKEN_TTL_DAYS} days'), ?)`),
   insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (id, user_id, family_id, watered_date) VALUES (?, ?, ?, ?)'),
@@ -292,7 +319,28 @@ function refreshTree(familyId: string, today: string): Family {
   return f;
 }
 
+// 期限切れの削除は読み出しのついでに行う。Bun サーバーには cron が無いため
+function purgeExpiredArtifacts(familyId: string) {
+  const expired = q.expiredArtifacts.all(familyId);
+  q.deleteExpired.run(familyId);
+  for (const a of expired) {
+    if (a.type !== 'photo') continue;
+    // 待つと state() を async にする必要があり、同期呼び出しの経路が壊れる。ファイル削除は失敗しても致命的でない
+    unlink(join(UPLOAD_DIR, basename(a.content))).catch(() => {});
+  }
+}
+
+// アプリを開かない家族の写真も30日で消えるよう、起動時にも全家族ぶん掃除する
+async function purgeAllExpiredArtifacts() {
+  const expired = q.expiredArtifactsAll.all();
+  q.deleteExpiredAll.run();
+  for (const a of expired) {
+    if (a.type === 'photo') await unlink(join(UPLOAD_DIR, basename(a.content))).catch(() => {});
+  }
+}
+
 function state(me: User) {
+  purgeExpiredArtifacts(me.family_id);
   const today = jstDate();
   const family = refreshTree(me.family_id, today);
   const members = q.members.all(family.id).map((u, i) => {
@@ -310,17 +358,26 @@ function state(me: User) {
       isAdmin: !!u.is_admin,
     };
   });
-  const artifacts = q.artifacts.all(family.id).map((a) => ({
-    id: a.id,
-    type: a.type,
-    author: a.author,
-    authorAvatar: a.author_avatar,
-    authorRole: a.author_role,
-    date: displayDate(a.created_at, today),
-    title: a.title,
-    content: a.type === 'photo' ? signedUploadUrl(a.content) : a.content,
-    coords: { x: a.x, y: a.y, rotate: a.rotate },
+  // 木に吊るすかアルバムかは経過時間だけで決まる。行は1回だけマップしてから振り分ける
+  const hangingSince = Date.now() - HANGING_HOURS * 3_600_000;
+  const rows = q.recentArtifacts.all(family.id).map((a) => ({
+    at: Date.parse(a.created_at + 'Z'),
+    item: {
+      id: a.id,
+      type: a.type,
+      author: a.author,
+      authorAvatar: a.author_avatar,
+      authorRole: a.author_role,
+      date: displayDate(a.created_at, today),
+      title: a.title,
+      content: a.type === 'photo' ? signedUploadUrl(a.content) : a.content,
+      coords: { x: a.x, y: a.y, rotate: a.rotate },
+    },
   }));
+  const hanging = rows.filter((r) => r.at >= hangingSince).slice(0, 20);
+  const hangingIds = new Set(hanging.map((r) => r.item.id));
+  const artifacts = hanging.map((r) => r.item);
+  const album = rows.filter((r) => !hangingIds.has(r.item.id)).map((r) => r.item);
   return {
     family: {
       name: family.name,
@@ -332,6 +389,7 @@ function state(me: User) {
     },
     members,
     artifacts,
+    album,
   };
 }
 
@@ -684,6 +742,7 @@ function cors(req: Request, res: Response) {
 }
 
 await stripExistingPhotos();
+await purgeAllExpiredArtifacts();
 
 const server = Bun.serve({
   port: PORT,

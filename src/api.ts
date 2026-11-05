@@ -18,6 +18,7 @@ export interface AppState {
   };
   members: FamilyMember[];
   artifacts: TreeArtifact[];
+  album: TreeArtifact[];
 }
 
 export class ApiError extends Error {

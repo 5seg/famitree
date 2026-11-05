@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { Droplets, Sparkles, Camera, Bell } from 'lucide-vue-next';
+import { Droplets, Sparkles, Camera, Bell, Images } from 'lucide-vue-next';
 
 defineProps<{
   hasWateredToday: boolean;
+  albumCount: number;
 }>();
 
 defineEmits<{
   (e: 'waterTree'): void;
   (e: 'openAddModal'): void;
   (e: 'openNudgeModal'): void;
+  (e: 'openAlbum'): void;
 }>();
 </script>
 
@@ -54,6 +56,22 @@ defineEmits<{
       >
         <Bell class="w-3.5 h-3.5 text-emerald-600" />
         <span>🌱 水やりを促す</span>
+      </button>
+
+      <!-- アルバム（木から外れた分と、20枚を超えた分） -->
+      <button
+        @click="$emit('openAlbum')"
+        class="relative py-3 px-3 rounded-2xl bg-stone-100 hover:bg-stone-200/80 border border-stone-200 text-stone-700 flex items-center justify-center shadow-xs transition-colors active:scale-98 cursor-pointer"
+        title="アルバム"
+        aria-label="アルバム"
+      >
+        <Images class="w-4 h-4 text-stone-600" />
+        <span
+          v-if="albumCount > 0"
+          class="absolute -top-1.5 -right-1.5 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-emerald-600 text-white text-[10px] font-bold leading-none flex items-center justify-center border border-stone-50"
+        >
+          {{ albumCount }}
+        </span>
       </button>
     </div>
   </div>

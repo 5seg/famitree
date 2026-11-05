@@ -4,6 +4,7 @@ import Header from './components/Header.vue';
 import FamilyStatusBar from './components/FamilyStatusBar.vue';
 import InteractiveTreeCanvas from './components/InteractiveTreeCanvas.vue';
 import ActionArea from './components/ActionArea.vue';
+import AlbumModal from './components/AlbumModal.vue';
 import WateringModal from './components/WateringModal.vue';
 import AddContentModal from './components/AddContentModal.vue';
 import ArtifactLightboxModal from './components/ArtifactLightboxModal.vue';
@@ -25,6 +26,7 @@ const familyName = ref('');
 const inviteCode = ref('');
 const members = ref<FamilyMember[]>([]);
 const artifacts = ref<TreeArtifact[]>([]);
+const album = ref<TreeArtifact[]>([]);
 const treeState = ref<TreeState>('growing');
 const treeLevel = ref<number>(1);
 const expPercent = ref<number>(0);
@@ -39,6 +41,8 @@ const applyState = (s: AppState) => {
   inviteCode.value = s.family.inviteCode;
   members.value = s.members;
   artifacts.value = s.artifacts;
+  // フロントと API は別々に配信するので、アルバムを返さない旧 API でも落とさない
+  album.value = s.album ?? [];
   treeState.value = s.family.treeState;
   treeLevel.value = s.family.level;
   expPercent.value = s.family.exp;
@@ -55,6 +59,7 @@ const isWateringAnimation = ref(false);
 const isAddModalOpen = ref(false);
 const isNudgeModalOpen = ref(false);
 const isInfoModalOpen = ref(false);
+const isAlbumModalOpen = ref(false);
 const selectedArtifact = ref<TreeArtifact | null>(null);
 const selectedMember = ref<FamilyMember | null>(null);
 const toastMessage = ref<string | null>(null);
@@ -90,12 +95,13 @@ onUnmounted(() => document.removeEventListener('visibilitychange', onVisible));
 
 // どのモーダルを開いたかだけを記録する（迷いの指標）
 watch(
-  [isWateringModalOpen, isAddModalOpen, isNudgeModalOpen, isInfoModalOpen],
-  ([w, a, n, i]) => {
+  [isWateringModalOpen, isAddModalOpen, isNudgeModalOpen, isInfoModalOpen, isAlbumModalOpen],
+  ([w, a, n, i, al]) => {
     if (w) track('modal_open', 'watering');
     if (a) track('modal_open', 'add_content');
     if (n) track('modal_open', 'nudge');
     if (i) track('modal_open', 'info');
+    if (al) track('modal_open', 'album');
   }
 );
 watch(selectedArtifact, (v) => v && track('modal_open', 'artifact'));
@@ -267,9 +273,11 @@ const unwateredMembers = computed(() =>
         <!-- Primary & Secondary Action Area -->
         <ActionArea
           :has-watered-today="hasWateredToday"
+          :album-count="album.length"
           @water-tree="handleWaterTree"
           @open-add-modal="isAddModalOpen = true"
           @open-nudge-modal="isNudgeModalOpen = true"
+          @open-album="isAlbumModalOpen = true"
         />
       </div>
 
@@ -306,6 +314,13 @@ const unwateredMembers = computed(() =>
       :is-open="isNudgeModalOpen"
       :unwatered-members="unwateredMembers"
       @close="isNudgeModalOpen = false"
+    />
+
+    <AlbumModal
+      :is-open="isAlbumModalOpen"
+      :items="album"
+      @select="selectedArtifact = $event"
+      @close="isAlbumModalOpen = false"
     />
 
     <MemberDetailModal
