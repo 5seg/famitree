@@ -26,3 +26,6 @@ dist-ssr
 
 # API data (SQLite, uploads)
 server/data
+
+# 検証用の招待コード（シードのたびに変わる）
+server/verify/codes.txt

@@ -120,6 +120,18 @@ CREATE TABLE IF NOT EXISTS nudges (
   sent_date TEXT NOT NULL,
   PRIMARY KEY (from_user, to_user, kind, sent_date)
 );
+-- 操作ログ（検証用）。内容は記録せず、種別と経過時間だけを残す
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  family_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  detail TEXT,
+  client_ms INTEGER NOT NULL DEFAULT 0, -- セッション開始からの経過ミリ秒
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS events_family ON events (family_id, created_at);
 `);
 
 // 既存 DB へのカラム追加（CREATE TABLE IF NOT EXISTS では反映されないため）
@@ -259,6 +271,13 @@ const q = {
   subEndpoints: db.query<{ endpoint: string }, [string]>('SELECT endpoint FROM push_subscriptions WHERE user_id = ? ORDER BY rowid'),
   deleteSub: db.query('DELETE FROM push_subscriptions WHERE endpoint = ?'),
   insertNudge: db.query('INSERT OR IGNORE INTO nudges (from_user, to_user, kind, sent_date) VALUES (?, ?, ?, ?)'),
+  insertEvent: db.query('INSERT INTO events (id, family_id, user_id, session_id, kind, detail, client_ms) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  eventsOut: db.query<any, []>(`
+    SELECT e.session_id, e.kind, e.detail, e.client_ms, e.created_at,
+           e.family_id, f.name AS family_name, u.name AS member_name
+    FROM events e JOIN families f ON f.id = e.family_id JOIN users u ON u.id = e.user_id
+    WHERE e.family_id LIKE 'verify-%'
+    ORDER BY e.created_at, e.rowid`),
 };
 
 // 水やりが無いまま日が経つと tree_status / streak_days が変わるので、読み出し時に保存値を更新する（日次バッチの代わり）
@@ -484,6 +503,19 @@ async function nudge(me: User, body: any) {
   return { sent };
 }
 
+// クライアントの操作ログ。1リクエスト最大 60 件、種別と経過時間だけを受け取る
+const MAX_EVENTS_PER_POST = 60;
+function trackEvents(me: User, body: any) {
+  const sessionId = str(body.sessionId, 'sessionId', 64);
+  if (!Array.isArray(body.events)) throw new HttpError(400, 'events must be an array');
+  for (const e of body.events.slice(0, MAX_EVENTS_PER_POST)) {
+    const kind = str(e?.kind, 'kind', 40);
+    const detail = e?.detail == null ? null : str(e.detail, 'detail', 200);
+    const ms = Math.max(0, Math.min(86_400_000, Math.round(Number(e?.t) || 0)));
+    q.insertEvent.run(crypto.randomUUID(), me.family_id, me.id, sessionId, kind, detail, ms);
+  }
+}
+
 function requireAdmin(me: User) {
   if (!me.is_admin) throw new HttpError(403, 'admin only');
 }
@@ -608,6 +640,16 @@ async function route(req: Request): Promise<Response> {
     }
     case 'POST /api/nudge':
       return Response.json(await nudge(auth(req), await json(req)));
+    case 'POST /api/events':
+      trackEvents(auth(req), await json(req));
+      return new Response(null, { status: 204 });
+    case 'GET /api/verify/events': {
+      // 検証時にだけ有効。キー未設定なら存在しないことにする
+      const key = process.env.VERIFY_KEY;
+      if (!key || new URL(req.url).searchParams.get('key') !== key) throw new HttpError(404, 'not found');
+      const rows = q.eventsOut.all();
+      return Response.json(rows, { headers: { 'cache-control': 'no-store' } });
+    }
     case 'POST /api/members/remove': {
       const me = auth(req);
       removeMember(me, await json(req));

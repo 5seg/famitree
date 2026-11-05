@@ -4,6 +4,9 @@ import type { FamilyMember, TreeArtifact, TreeState } from './types';
 const BASE = import.meta.env.VITE_API_BASE ?? '';
 const TOKEN_KEY = 'famitree-token';
 
+// track.ts が直接 fetch するため公開する
+export const API_BASE = BASE;
+
 export interface AppState {
   family: {
     name: string;

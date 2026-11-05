@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import Header from './components/Header.vue';
 import FamilyStatusBar from './components/FamilyStatusBar.vue';
 import InteractiveTreeCanvas from './components/InteractiveTreeCanvas.vue';
@@ -13,6 +13,7 @@ import DemoControlPanel from './components/DemoControlPanel.vue';
 import InfoModal from './components/InfoModal.vue';
 import JoinScreen from './components/JoinScreen.vue';
 import { disablePush } from './push';
+import { startSession, track, endSession } from './track';
 import { fetchState, waterTree, sendNudge, removeMember, setMemberAdmin, leaveFamily, clearToken, type AppState } from './api';
 import { authed, describeError } from './session';
 import type { TreeState, FamilyMember, TreeArtifact } from './types';
@@ -29,7 +30,11 @@ const treeLevel = ref<number>(1);
 const expPercent = ref<number>(0);
 const streak = ref<number>(0);
 
+// 操作ログの開始（このタブのセッション）。検証の計測にのみ使う
+startSession();
+
 const applyState = (s: AppState) => {
+  const first = !loaded.value;
   familyName.value = s.family.name;
   inviteCode.value = s.family.inviteCode;
   members.value = s.members;
@@ -39,6 +44,9 @@ const applyState = (s: AppState) => {
   expPercent.value = s.family.exp;
   streak.value = s.family.streak;
   loaded.value = true;
+  if (first) {
+    track('state_loaded', `${s.family.treeState} streak=${s.family.streak} members=${s.members.length}`);
+  }
 };
 
 // Modals state
@@ -71,6 +79,7 @@ const load = async () => {
 
 const onVisible = () => {
   if (document.visibilityState === 'visible') load();
+  else endSession('hidden');
 };
 
 onMounted(() => {
@@ -78,6 +87,19 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onVisible);
 });
 onUnmounted(() => document.removeEventListener('visibilitychange', onVisible));
+
+// どのモーダルを開いたかだけを記録する（迷いの指標）
+watch(
+  [isWateringModalOpen, isAddModalOpen, isNudgeModalOpen, isInfoModalOpen],
+  ([w, a, n, i]) => {
+    if (w) track('modal_open', 'watering');
+    if (a) track('modal_open', 'add_content');
+    if (n) track('modal_open', 'nudge');
+    if (i) track('modal_open', 'info');
+  }
+);
+watch(selectedArtifact, (v) => v && track('modal_open', 'artifact'));
+watch(selectedMember, (v) => v && track('modal_open', 'member'));
 
 const onJoined = () => {
   authed.value = true;
@@ -94,12 +116,15 @@ const isAdmin = computed(() => currentUser.value?.isAdmin ?? false);
 // Handle Watering Action
 const handleWaterTree = async () => {
   if (hasWateredToday.value) return;
+  track('water_press');
   try {
     applyState(await waterTree());
   } catch (e) {
+    track('water_error');
     showToast(describeError(e));
     return;
   }
+  track('water_ok', treeState.value);
 
   isWateringAnimation.value = true;
   setTimeout(() => {
@@ -110,6 +135,7 @@ const handleWaterTree = async () => {
 
 // AddContentModal がAPI呼び出しまで行い、返ってきた状態を受け取る
 const handleSaved = (s: AppState, type: TreeArtifact['type']) => {
+  track('artifact_saved', type);
   applyState(s);
   showToast(
     type === 'photo'
@@ -121,6 +147,7 @@ const handleSaved = (s: AppState, type: TreeArtifact['type']) => {
 const handleSendHeart = async (m: FamilyMember) => {
   try {
     const { sent } = await sendNudge([m.id], 'heart');
+    track('nudge_sent', sent ? 'heart' : 'already');
     showToast(
       sent
         ? `❤️ ${m.name}さんに温かい見守りエールを送りました`
