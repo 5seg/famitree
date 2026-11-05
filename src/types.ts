@@ -22,5 +22,6 @@ export interface TreeArtifact {
   date: string;
   title: string;
   content: string; // Image URL or Text message
-  coords: { x: number; y: number; rotate: number }; // Percentage position on tree
+  // アップロード時に保存された位置。描画は枚数から自動配置するので、傾きと揺らぎの種としてだけ使う
+  coords: { x: number; y: number; rotate: number };
 }

@@ -11,6 +11,7 @@
     "verify:tally": "bun server/verify/tally.ts",
     "verify:simulate": "bun server/verify/simulate.ts",
     "verify:report": "bun server/verify/report.ts",
+    "verify:material": "bun server/verify/material.ts",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "deploy:pages": "bun run build && wrangler pages deploy dist --project-name famitree --force"

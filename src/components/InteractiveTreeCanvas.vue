@@ -45,6 +45,76 @@ const stateThemes = {
 };
 
 const currentTheme = computed(() => stateThemes[props.treeState]);
+
+// アーティファクトを吊るす領域（キャンバス 340px に対する割合）
+const CANVAS_SIZE = 340;
+const HANG_AREA = { left: 0.1, right: 0.9, top: 0.16, bottom: 0.8 };
+// 吊り紐を含めた写真1枚の縦横比（高さ ÷ 幅）
+const CARD_ASPECT = 1.3;
+
+type PlacedArtifact = {
+  artifact: TreeArtifact;
+  left: number;
+  top: number;
+  width: number;
+  rotate: number;
+  compact: boolean; // 小さいカードではキャプションを省いて写真だけ見せる
+};
+
+// 保存された座標は使わず、枚数から升目を決めて並べる。
+// ランダム配置のままだと写真が増えたときに重なって隠れてしまうため
+const placedArtifacts = computed<PlacedArtifact[]>(() => {
+  const items = [...props.artifacts].reverse(); // 古い順に描き、新しいものほど手前に来るようにする
+  if (items.length === 0) return [];
+
+  const areaW = CANVAS_SIZE * (HANG_AREA.right - HANG_AREA.left);
+  const areaH = CANVAS_SIZE * (HANG_AREA.bottom - HANG_AREA.top);
+
+  // 写真が一番大きく写る分割（列数）を選ぶ
+  let cols = 1;
+  let cardW = 0;
+  for (let c = 1; c <= items.length; c++) {
+    const rows = Math.ceil(items.length / c);
+    const w = Math.min((areaW / c) * 0.92, (areaH / rows / CARD_ASPECT) * 0.92);
+    if (w > cardW) {
+      cardW = w;
+      cols = c;
+    }
+  }
+  cardW = Math.min(cardW, 92); // 元の写真サイズより大きくしない
+
+  const rows = Math.ceil(items.length / cols);
+  const cellW = areaW / cols;
+  const cellH = areaH / rows;
+  const lastRowCount = items.length - (rows - 1) * cols;
+
+  return items.map((artifact, i) => {
+    const row = Math.floor(i / cols);
+    const col = i % cols;
+    // 最終行が埋まらないときは中央に寄せる
+    const offset = row === rows - 1 ? (cols - lastRowCount) / 2 : 0;
+    // 升目っぽさを消すための、保存座標から作る小さな揺らぎ
+    const jitterX = (((artifact.coords.x % 4) + 4) % 4 - 1.5) * cellW * 0.03;
+    const jitterY = (((artifact.coords.y % 3) + 3) % 3 - 1) * cellH * 0.02;
+    const x = CANVAS_SIZE * HANG_AREA.left + cellW * (col + offset + 0.5) + jitterX;
+    const y = CANVAS_SIZE * HANG_AREA.top + cellH * (row + 0.5) + jitterY;
+
+    // 木札は文字が入るぶん広めに。ただし升目からははみ出さない
+    const width =
+      artifact.type === 'wood'
+        ? Math.min(cellW * 0.96, Math.max(76, cardW * 1.15))
+        : cardW;
+
+    return {
+      artifact,
+      left: (x / CANVAS_SIZE) * 100,
+      top: (y / CANVAS_SIZE) * 100,
+      width,
+      rotate: Math.max(-4, Math.min(4, artifact.coords.rotate * 0.7)),
+      compact: width < 72,
+    };
+  });
+});
 </script>
 
 <template>
@@ -170,54 +240,64 @@ const currentTheme = computed(() => stateThemes[props.treeState]);
       <!-- Hanging Artifacts -->
       <div class="absolute inset-0 pointer-events-auto">
         <div
-          v-for="artifact in artifacts"
-          :key="artifact.id"
+          v-for="item in placedArtifacts"
+          :key="item.artifact.id"
           :style="{
-            left: `${artifact.coords.x}%`,
-            top: `${artifact.coords.y}%`,
-            transform: `translate(-50%, -50%) rotate(${artifact.coords.rotate}deg)`,
+            left: `${item.left}%`,
+            top: `${item.top}%`,
+            width: `${item.width}px`,
+            fontSize: `${item.width / 10}px`,
+            rotate: `${item.rotate}deg`,
+            translate: '-50% -50%',
           }"
-          @click="$emit('selectArtifact', artifact)"
-          class="absolute cursor-pointer group z-20 hover:scale-110 active:scale-95 transition-all"
+          @click="$emit('selectArtifact', item.artifact)"
+          class="absolute z-20 group cursor-pointer hover:z-40 hover:scale-110 active:scale-95 transition-all duration-200"
         >
           <!-- Hanging string -->
-          <div class="w-[1.5px] h-6 bg-stone-400/80 mx-auto -mb-1 shadow-xs group-hover:bg-amber-600 transition-colors" />
+          <div class="w-[0.2em] min-w-px h-[2.6em] bg-stone-400/80 mx-auto -mb-[0.15em] shadow-xs group-hover:bg-amber-600 transition-colors" />
 
           <!-- Polaroid Photo -->
           <div
-            v-if="artifact.type === 'photo'"
-            class="bg-white p-1 pb-2 rounded-xs shadow-polaroid border border-stone-200/90 w-22 text-center"
+            v-if="item.artifact.type === 'photo'"
+            class="bg-white p-[0.12em] pb-[0.3em] rounded-xs shadow-polaroid border border-stone-200/90 text-center"
           >
-            <div class="w-20 h-16 bg-stone-100 overflow-hidden rounded-2xs relative">
+            <div class="w-full h-[8em] bg-stone-100 overflow-hidden rounded-[0.15em] relative">
               <img
-                :src="artifact.content"
-                :alt="artifact.title"
+                :src="item.artifact.content"
+                :alt="item.artifact.title"
                 referrerpolicy="no-referrer"
                 class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 loading="lazy"
               />
-              <span class="absolute top-1 left-1 text-[9px] bg-white/90 rounded-full px-1 py-0.2 shadow-xs">
-                {{ artifact.authorAvatar }}
+              <span
+                v-if="!item.compact"
+                class="absolute top-[0.15em] left-[0.15em] text-[0.95em] leading-none bg-white/90 rounded-full px-[0.2em] py-[0.05em] shadow-xs"
+              >
+                {{ item.artifact.authorAvatar }}
               </span>
             </div>
-            <p class="mt-1 text-[9px] font-medium text-stone-700 truncate px-0.5">
-              {{ artifact.title }}
+            <p
+              v-if="!item.compact"
+              class="mt-[0.2em] text-[1em] leading-tight font-medium text-stone-700 truncate px-[0.1em]"
+            >
+              {{ item.artifact.title }}
             </p>
           </div>
 
           <!-- Wood Carved Plaque -->
           <div
             v-else
-            class="wood-grain px-2.5 py-1.5 rounded-lg shadow-wooden border border-amber-900/40 text-amber-50 min-w-24 max-w-28 text-center"
+            class="wood-grain px-[0.3em] py-[0.25em] rounded-lg shadow-wooden border border-amber-900/40 text-amber-50 text-center"
+            :style="{ fontSize: `${Math.max(8, item.width / 10)}px` }"
           >
-            <div class="flex items-center justify-center gap-1 mb-0.5">
-              <span class="text-[10px]">{{ artifact.authorAvatar }}</span>
-              <span class="text-[9px] font-bold text-amber-200 tracking-wider">
-                {{ artifact.author }}
+            <div class="flex items-center justify-center gap-[0.2em] mb-[0.1em]">
+              <span class="text-[1em]">{{ item.artifact.authorAvatar }}</span>
+              <span class="text-[0.95em] font-bold text-amber-200 tracking-wider">
+                {{ item.artifact.author }}
               </span>
             </div>
-            <p class="text-[10px] font-medium leading-tight line-clamp-2 text-stone-100 drop-shadow-xs">
-              {{ artifact.content }}
+            <p class="text-[1em] font-medium leading-tight line-clamp-2 text-stone-100 drop-shadow-xs">
+              {{ item.artifact.content }}
             </p>
           </div>
         </div>
