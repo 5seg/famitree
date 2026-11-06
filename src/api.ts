@@ -15,7 +15,10 @@ export interface AppState {
     exp: number; // 0-99
     treeState: TreeState;
     streak: number;
+    hasRecoveryKey?: boolean;
   };
+  // 自分の状態。復旧コードを発行済みかどうかを設定画面で出すために使う
+  me?: { id: string; name: string; isAdmin: boolean; hasRecovery: boolean };
   members: FamilyMember[];
   artifacts: TreeArtifact[];
   album: TreeArtifact[];
@@ -54,15 +57,49 @@ interface Profile {
   avatar: string;
 }
 
-async function saveToken(p: Promise<{ token: string }>) {
-  localStorage.setItem(TOKEN_KEY, (await p).token);
+// 復旧コードは平文を返せるのは発行した瞬間だけなので、受け取ったら画面で出しきる
+interface Issued {
+  token: string;
+  recoveryCode: string;
 }
 
-export const createFamily = (familyName: string, profile: Profile) =>
-  saveToken(request('POST', '/api/families', { familyName, ...profile }));
+const storeToken = (token: string) => localStorage.setItem(TOKEN_KEY, token);
 
-export const joinFamily = (inviteCode: string, profile: Profile) =>
-  saveToken(request('POST', '/api/join', { inviteCode, ...profile }));
+// 家族をつくる / 参加する。戻り値は端末を失くしたとき用の復旧コード
+export async function createFamily(familyName: string, profile: Profile) {
+  const r = await request<Issued>('POST', '/api/families', { familyName, ...profile });
+  storeToken(r.token);
+  return r.recoveryCode ?? '';
+}
+
+export async function joinFamily(inviteCode: string, profile: Profile) {
+  const r = await request<Issued>('POST', '/api/join', { inviteCode, ...profile });
+  storeToken(r.token);
+  return r.recoveryCode ?? '';
+}
+
+// 端末を失くした端末から、自分の復旧コードで同じ参加者として戻る（古い端末のトークンは切れる）
+export async function recoverSession(recoveryCode: string) {
+  const r = await request<{ token: string; name: string }>('POST', '/api/recover', { recoveryCode });
+  storeToken(r.token);
+  return r.name;
+}
+
+// 家族の緊急用キーで管理者として入り直す。キーは使い捨てで、新しいキーが返る
+export async function recoverFamily(recoveryCode: string, profile: Profile) {
+  const r = await request<Issued & { familyRecoveryCode: string }>('POST', '/api/family/recover', {
+    recoveryCode,
+    ...profile,
+  });
+  storeToken(r.token);
+  return { recoveryCode: r.recoveryCode, familyKey: r.familyRecoveryCode };
+}
+
+// 自分の復旧コードを発行・再発行（古いコードは無効になる）
+export const issueRecoveryCode = () => request<{ recoveryCode: string }>('POST', '/api/recovery/issue');
+
+// 家族の緊急用キーを発行・再発行（管理者のみ）
+export const issueFamilyKey = () => request<{ recoveryCode: string }>('POST', '/api/family/recovery/issue');
 
 export const fetchState = () => request<AppState>('GET', '/api/state');
 

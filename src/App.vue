@@ -31,6 +31,9 @@ const treeState = ref<TreeState>('growing');
 const treeLevel = ref<number>(1);
 const expPercent = ref<number>(0);
 const streak = ref<number>(0);
+// 自分の行（復旧コードの発行状態と、管理者かどうか）
+const me = ref<AppState['me'] | null>(null);
+const hasRecoveryKey = ref(false);
 
 // 操作ログの開始（このタブのセッション）。検証の計測にのみ使う
 startSession();
@@ -47,9 +50,13 @@ const applyState = (s: AppState) => {
   treeLevel.value = s.family.level;
   expPercent.value = s.family.exp;
   streak.value = s.family.streak;
+  // 旧 API は me を返さないので、無くても落とさない
+  me.value = s.me ?? null;
+  hasRecoveryKey.value = s.family.hasRecoveryKey ?? false;
   loaded.value = true;
   if (first) {
     track('state_loaded', `${s.family.treeState} streak=${s.family.streak} members=${s.members.length}`);
+    hintRecovery();
   }
 };
 
@@ -71,6 +78,14 @@ const showToast = (msg: string) => {
   toastTimer = setTimeout(() => {
     toastMessage.value = null;
   }, 2800);
+};
+
+// 復旧コード未発行のまま端末を失くすと戻れないので、一度だけ案内する
+const hintRecovery = () => {
+  if (me.value?.hasRecovery !== false) return;
+  if (localStorage.getItem('famitree-recovery-hint')) return;
+  localStorage.setItem('famitree-recovery-hint', '1');
+  setTimeout(() => showToast('🔑 ⓘ から「復旧コード」を発行しておくと安心です'), 1200);
 };
 
 const load = async () => {
@@ -360,6 +375,9 @@ const unwateredMembers = computed(() =>
       :is-open="isInfoModalOpen"
       :family-name="familyName"
       :invite-code="inviteCode"
+      :has-recovery="me?.hasRecovery ?? false"
+      :has-recovery-key="hasRecoveryKey"
+      :is-admin="isAdmin"
       @toast="showToast"
       @close="isInfoModalOpen = false"
     />

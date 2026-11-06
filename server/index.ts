@@ -144,6 +144,16 @@ if (!userCols.includes('token_expires_at')) {
   // 既存ユーザーは全員失効させないよう、移行時に TTL ぶん延長しておく
   db.run("UPDATE users SET token_expires_at = datetime('now', '+90 days') WHERE token_expires_at IS NULL");
 }
+// 端末を失ったときに戻るための復旧コード。ハッシュだけを保存する
+if (!userCols.includes('recovery_hash')) db.run('ALTER TABLE users ADD COLUMN recovery_hash TEXT');
+if (!userCols.includes('recovery_issued_at')) db.run('ALTER TABLE users ADD COLUMN recovery_issued_at DATETIME');
+db.run('CREATE UNIQUE INDEX IF NOT EXISTS users_recovery_hash ON users (recovery_hash)');
+
+// 家族単位の緊急用キー（管理者が端末も自分の復旧コードも失った場合の最後の手段）
+const familyCols = db.query<{ name: string }, []>('PRAGMA table_info(families)').all().map((c) => c.name);
+if (!familyCols.includes('recovery_hash')) db.run('ALTER TABLE families ADD COLUMN recovery_hash TEXT');
+if (!familyCols.includes('recovery_issued_at')) db.run('ALTER TABLE families ADD COLUMN recovery_issued_at DATETIME');
+db.run('CREATE UNIQUE INDEX IF NOT EXISTS families_recovery_hash ON families (recovery_hash)');
 // 管理者がいない家族（既存データ）は、最初のメンバーを管理者にする
 db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
   SELECT MIN(u.rowid) FROM users u
@@ -152,9 +162,9 @@ db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
   GROUP BY u.family_id
 )`);
 
-type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number };
+type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number; recovery_issued_at?: string | null };
 type AuthUser = User & { token_expires_at: string | null };
-type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string };
+type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string; recovery_issued_at?: string | null };
 type ArtifactRow = {
   id: string;
   type: string;
@@ -189,6 +199,34 @@ const newToken = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).t
 const INVITE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const newInviteCode = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => INVITE_ALPHABET[b % INVITE_ALPHABET.length]).join('');
+
+// 復旧コード: 端末を失ったときに同じ参加者として戻るための合言葉。Crockford base32 の 12桁 = 60bit。
+// 4桁ずつ区切って見せ、DB にはハッシュだけを残す（DB が漏れても他人の端末を乗っ取れない）
+const RECOVERY_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const RECOVERY_LENGTH = 12;
+const newRecoveryCode = () => {
+  const chars = Array.from(crypto.getRandomValues(new Uint8Array(RECOVERY_LENGTH)), (b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]).join('');
+  return chars.match(/.{4}/g)!.join('-');
+};
+// 打ち間違いを吸収する。小文字・空白・区切りは捨て、紛らわしい O/I/L/U は生成側の文字に寄せる
+const normalizeRecoveryCode = (raw: string) =>
+  raw.toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1').replace(/U/g, 'V');
+// トークンと用途が混ざらないよう、ハッシュの前に接頭辞を付ける
+const recoveryHash = (code: string) => hashToken(`recovery:${normalizeRecoveryCode(code)}`);
+
+// 復旧コードの総当たり対策。60bit なので現実的には破れないが、ログを汚さない程度に絞る
+const recoveryAttempts = new Map<string, { n: number; until: number }>();
+function guardRecovery(req: Request) {
+  if (recoveryAttempts.size > 5000) recoveryAttempts.clear();
+  const ip = req.headers.get('cf-connecting-ip') ?? req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local';
+  const now = Date.now();
+  const rec = recoveryAttempts.get(ip);
+  if (!rec || now > rec.until) {
+    recoveryAttempts.set(ip, { n: 1, until: now + 60_000 });
+    return;
+  }
+  if (++rec.n > 10) throw new HttpError(429, 'too many attempts');
+}
 
 const AVATAR_COLORS = [
   'bg-emerald-100 border-emerald-300 text-emerald-800',
@@ -257,12 +295,17 @@ const HANGING_HOURS = 24;
 const ALBUM_DAYS = 30;
 
 const q = {
-  userByToken: db.query<AuthUser, [string]>('SELECT id, family_id, name, role, avatar, is_admin, token_expires_at FROM users WHERE token_hash = ? AND removed_at IS NULL'),
+  userByToken: db.query<AuthUser, [string]>('SELECT id, family_id, name, role, avatar, is_admin, token_expires_at, recovery_issued_at FROM users WHERE token_hash = ? AND removed_at IS NULL'),
+  userByRecovery: db.query<AuthUser, [string]>('SELECT id, family_id, name, role, avatar, is_admin, token_expires_at, recovery_issued_at FROM users WHERE recovery_hash = ? AND removed_at IS NULL'),
   family: db.query<Family, [string]>('SELECT * FROM families WHERE id = ?'),
   familyByInvite: db.query<Family, [string]>('SELECT * FROM families WHERE invite_code = ?'),
+  familyByRecovery: db.query<Family, [string]>('SELECT * FROM families WHERE recovery_hash = ?'),
+  setFamilyRecovery: db.query('UPDATE families SET recovery_hash = ?, recovery_issued_at = CURRENT_TIMESTAMP WHERE id = ?'),
   userById: db.query<User, [string, string]>('SELECT id, family_id, name, role, avatar, is_admin FROM users WHERE id = ? AND family_id = ? AND removed_at IS NULL'),
   adminCount: db.query<{ n: number }, [string]>('SELECT COUNT(*) AS n FROM users WHERE family_id = ? AND is_admin = 1 AND removed_at IS NULL'),
   setAdmin: db.query('UPDATE users SET is_admin = ? WHERE id = ?'),
+  setRecovery: db.query('UPDATE users SET recovery_hash = ?, recovery_issued_at = CURRENT_TIMESTAMP WHERE id = ?'),
+  rotateToken: db.query(`UPDATE users SET token_hash = ?, token_expires_at = datetime('now', '+${TOKEN_TTL_DAYS} days') WHERE id = ?`),
   removeUser: db.query('UPDATE users SET removed_at = CURRENT_TIMESTAMP WHERE id = ?'),
   deleteUserSubs: db.query('DELETE FROM push_subscriptions WHERE user_id = ?'),
   lastFamilyDate: db.query<{ d: string | null }, [string]>('SELECT MAX(watered_date) AS d FROM watering_logs WHERE family_id = ?'),
@@ -284,7 +327,7 @@ const q = {
   deleteExpiredAll: db.query(
     `DELETE FROM artifacts WHERE created_at < datetime('now', '-${ALBUM_DAYS} days')`),
   insertFamily: db.query('INSERT INTO families (id, name, invite_code) VALUES (?, ?, ?)'),
-  insertUser: db.query(`INSERT INTO users (id, family_id, name, role, avatar, token_hash, token_expires_at, is_admin) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+${TOKEN_TTL_DAYS} days'), ?)`),
+  insertUser: db.query(`INSERT INTO users (id, family_id, name, role, avatar, token_hash, token_expires_at, is_admin, recovery_hash, recovery_issued_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+${TOKEN_TTL_DAYS} days'), ?, ?, CURRENT_TIMESTAMP)`),
   insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (id, user_id, family_id, watered_date) VALUES (?, ?, ?, ?)'),
   touchUser: db.query('UPDATE users SET last_watered_at = CURRENT_TIMESTAMP WHERE id = ?'),
   extendToken: db.query(`UPDATE users SET token_expires_at = datetime('now', '+${TOKEN_TTL_DAYS} days') WHERE id = ?`),
@@ -339,7 +382,7 @@ async function purgeAllExpiredArtifacts() {
   }
 }
 
-function state(me: User) {
+function state(me: User & { recovery_issued_at?: string | null }) {
   purgeExpiredArtifacts(me.family_id);
   const today = jstDate();
   const family = refreshTree(me.family_id, today);
@@ -386,7 +429,9 @@ function state(me: User) {
       exp: family.exp,
       treeState: family.tree_status,
       streak: family.streak_days,
+      hasRecoveryKey: !!family.recovery_issued_at,
     },
+    me: { id: me.id, name: me.name, isAdmin: !!me.is_admin, hasRecovery: !!me.recovery_issued_at },
     members,
     artifacts,
     album,
@@ -395,6 +440,7 @@ function state(me: User) {
 
 function createUser(familyId: string, body: any, isAdmin = false) {
   const token = newToken();
+  const recoveryCode = newRecoveryCode();
   q.insertUser.run(
     crypto.randomUUID(),
     familyId,
@@ -403,8 +449,10 @@ function createUser(familyId: string, body: any, isAdmin = false) {
     str(body.avatar, 'avatar', 8),
     hashToken(token),
     isAdmin ? 1 : 0,
+    recoveryHash(recoveryCode),
   );
-  return token;
+  // 復旧コードはここでしか平文を持てないので、返して画面に出しきる
+  return { token, recoveryCode };
 }
 
 const createFamily = db.transaction((body: any) => {
@@ -657,12 +705,53 @@ async function route(req: Request): Promise<Response> {
 
   switch (key) {
     case 'POST /api/families':
-      return Response.json({ token: createFamily(await json(req)) }, { status: 201 });
+      return Response.json(createFamily(await json(req)), { status: 201 });
     case 'POST /api/join': {
       const body = await json(req);
       const family = q.familyByInvite.get(str(body.inviteCode, 'inviteCode', 8).toUpperCase());
       if (!family) throw new HttpError(404, 'invite code not found');
-      return Response.json({ token: createUser(family.id, body) }, { status: 201 });
+      return Response.json(createUser(family.id, body), { status: 201 });
+    }
+    // 端末を失った人が自分の復旧コードで戻る。同じ参加者の端末は1台だけなので古いトークンは切る
+    case 'POST /api/recover': {
+      const body = await json(req);
+      guardRecovery(req);
+      const user = q.userByRecovery.get(recoveryHash(str(body.recoveryCode, 'recoveryCode', 40)));
+      if (!user) throw new HttpError(404, 'recovery code not found');
+      const token = newToken();
+      db.transaction(() => {
+        q.rotateToken.run(hashToken(token), user.id);
+        q.deleteUserSubs.run(user.id);
+      })();
+      return Response.json({ token, name: user.name });
+    }
+    // 復旧コードの発行・再発行（古いコードはその場で無効になる）
+    case 'POST /api/recovery/issue': {
+      const me = auth(req);
+      const recoveryCode = newRecoveryCode();
+      q.setRecovery.run(recoveryHash(recoveryCode), me.id);
+      return Response.json({ recoveryCode });
+    }
+    case 'POST /api/family/recovery/issue': {
+      const me = auth(req);
+      requireAdmin(me);
+      const recoveryCode = newRecoveryCode();
+      q.setFamilyRecovery.run(recoveryHash(recoveryCode), me.family_id);
+      return Response.json({ recoveryCode });
+    }
+    // 家族の緊急用キーで入り直す。管理者として新しい端末が加わり、キーは使い捨て（新しいキーを返す）
+    case 'POST /api/family/recover': {
+      const body = await json(req);
+      guardRecovery(req);
+      const family = q.familyByRecovery.get(recoveryHash(str(body.recoveryCode, 'recoveryCode', 40)));
+      if (!family) throw new HttpError(404, 'recovery code not found');
+      const nextKey = newRecoveryCode();
+      const created = db.transaction(() => {
+        const member = createUser(family.id, body, true);
+        q.setFamilyRecovery.run(recoveryHash(nextKey), family.id);
+        return member;
+      })();
+      return Response.json({ ...created, familyRecoveryCode: nextKey }, { status: 201 });
     }
     case 'GET /api/state':
       return Response.json(state(auth(req)));
