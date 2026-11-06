@@ -14,12 +14,14 @@ defineEmits<{
 <template>
   <div class="px-4 py-2">
     <div class="bg-stone-50/95 backdrop-blur-md rounded-2xl p-2.5 border border-stone-200/80 shadow-xs">
-      <div class="flex items-center justify-between gap-1">
+      <div
+        class="flex items-stretch gap-1.5 px-0.5 overflow-x-auto overscroll-x-contain snap-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         <button
           v-for="member in members"
           :key="member.id"
           @click="$emit('selectMember', member)"
-          class="flex-1 flex flex-col items-center p-1.5 rounded-xl hover:bg-stone-100/80 active:scale-95 transition-all relative cursor-pointer"
+          class="flex-1 basis-0 min-w-[72px] snap-start flex flex-col items-center p-1.5 rounded-xl hover:bg-stone-100/80 active:scale-95 transition-all relative cursor-pointer"
         >
           <!-- Avatar with Watered Indicator Badge -->
           <div class="relative">
@@ -47,18 +49,18 @@ defineEmits<{
           </div>
 
           <!-- Name & Role tag -->
-          <div class="mt-1.5 text-center">
-            <span class="block text-xs font-semibold text-stone-800 leading-tight">
+          <div class="mt-1.5 text-center min-w-0 w-full">
+            <span class="block text-xs font-semibold text-stone-800 leading-tight truncate">
               {{ member.name }}
             </span>
-            <span class="block text-[10px] text-stone-600 font-medium">
+            <span class="block text-[10px] text-stone-600 font-medium truncate">
               {{ member.role }}
             </span>
           </div>
 
           <!-- Status pill text -->
           <span
-            class="mt-1 text-[9px] px-1.5 py-0.5 rounded-full font-medium"
+            class="mt-1 text-[9px] px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap"
             :class="member.wateredToday ? 'bg-emerald-100/90 text-emerald-800' : 'bg-stone-100 text-stone-600'"
           >
             {{ member.wateredToday ? '💧 水やり完了' : '⏳ まだ' }}
