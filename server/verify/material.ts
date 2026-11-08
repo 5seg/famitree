@@ -65,9 +65,9 @@ const streaks = many<{ streak_days: number; tree_status: string }>(
   `${since} 00:00:00`,
   `${to} 23:59:59`
 );
-const ev = many<{ session_id: string; kind: string; client_ms: number; detail: string | null }>(
+const ev = many<{ user_id: string; session_id: string; kind: string; client_ms: number; detail: string | null }>(
   `WITH fam AS (${FAM})
-   SELECT e.session_id, e.kind, e.client_ms, e.detail FROM events e JOIN fam ON fam.id = e.family_id
+   SELECT e.user_id, e.session_id, e.kind, e.client_ms, e.detail FROM events e JOIN fam ON fam.id = e.family_id
    WHERE e.session_id NOT LIKE 'sim-%' ORDER BY e.created_at`,
   `${since} 00:00:00`,
   `${to} 23:59:59`
@@ -84,7 +84,15 @@ const photographers = new Set(artifacts.filter((a) => a.type === 'photo').map((a
 
 // ---- 初見の速さ（イベントから） ----
 const bySession = new Map<string, { press?: number; modals: number; ended: boolean }>();
+// 初見 = その人の最初のセッションでの水やり押下。再訪日の値は混ぜない。
+const firstPressByUser = new Map<string, number>();
+const seenUsers = new Set<string>();
 for (const e of ev) {
+  if (!seenUsers.has(e.user_id)) {
+    seenUsers.add(e.user_id);
+    if (e.kind !== 'water_press') firstPressByUser.set(e.user_id, -1); // 最初のセッションでは押していない
+  }
+  if (e.kind === 'water_press' && firstPressByUser.get(e.user_id) === -1) firstPressByUser.set(e.user_id, e.client_ms);
   const s = bySession.get(e.session_id) ?? { modals: 0, ended: false };
   if (e.kind === 'water_press' && s.press === undefined) s.press = e.client_ms;
   if (e.kind === 'modal_open') s.modals++;
@@ -93,6 +101,19 @@ for (const e of ev) {
 }
 const sessions = [...bySession.values()];
 const presses = sessions.map((s) => s.press).filter((x): x is number => typeof x === 'number');
+const firstPresses = [...firstPressByUser.values()].filter((x) => x >= 0);
+
+// ---- 何日続けたか（人単位） ----
+const daysByUser = new Map<string, Set<string>>();
+for (const w of waterRows) {
+  const s = daysByUser.get(w.user_id) ?? new Set<string>();
+  s.add(w.watered_date);
+  daysByUser.set(w.user_id, s);
+}
+const dayCounts = [...daysByUser.values()].map((s) => s.size);
+const lastDay = waterRows.reduce((m, w) => (w.watered_date > m ? w.watered_date : m), '');
+const lastedToLastDay = waterRows.filter((w) => w.watered_date === lastDay).length;
+const threePlus = dayCounts.filter((n) => n >= 3).length;
 
 // ---- 復帰（枯れ→復帰とみなせる間隔） ----
 let returns = 0;
@@ -136,6 +157,23 @@ const out = {
     .map(([d, n]) => `${d}日:${n}世帯`)
     .join(', '),
   sessions: sessions.length,
+  // 初見の速さ（その人の最初のセッションのみ）
+  firstPress: {
+    n: firstPresses.length,
+    medianSec: firstPresses.length ? Math.round((median(firstPresses) as number) / 100) / 10 : null,
+    minSec: firstPresses.length ? Math.round(Math.min(...firstPresses) / 100) / 10 : null,
+    maxSec: firstPresses.length ? Math.round(Math.max(...firstPresses) / 100) / 10 : null,
+    over10s: firstPresses.filter((p) => p > 10_000).length,
+  },
+  // 何日続けたか
+  keptDays: {
+    lastDay,
+    onLastDay: lastedToLastDay,
+    threePlus,
+    maxDays: dayCounts.length ? Math.max(...dayCounts) : 0,
+    distinctDays: new Set(waterRows.map((w) => w.watered_date)).size,
+  },
+  // 全セッション合算（再訪日を含む。初見の数字としては使わない）
   pressMedianSec: presses.length ? Math.round((median(presses) as number) / 100) / 10 : null,
   pressMinSec: presses.length ? Math.round(Math.min(...presses) / 100) / 10 : null,
   pressMaxSec: presses.length ? Math.round(Math.max(...presses) / 100) / 10 : null,
@@ -179,18 +217,28 @@ console.log(`| エール | ${out.nudges}件 |`);
 console.log(`| 枯れ→復帰 | ${out.returns}回 |`);
 console.log(`| 連続日数 | ${out.streakMix || '—'} |`);
 console.log('');
-console.log(`## 初見の速さ（操作ログ）\n`);
+console.log(`## 続けた日数\n`);
 console.log(`| 指標 | 値 |`);
 console.log(`|---|---|`);
-console.log(`| 記録したセッション | ${out.sessions} |`);
-console.log(`| 水やりを押すまで（中央値） | ${sec(out.pressMedianSec === null ? null : out.pressMedianSec * 1000)}秒 |`);
-console.log(`| 最短 / 最長 | ${sec(out.pressMinSec === null ? null : out.pressMinSec * 1000)}秒 / ${sec(out.pressMaxSec === null ? null : out.pressMaxSec * 1000)}秒 |`);
-console.log(`| 10秒を超えた人 | ${out.pressOver10s}人 |`);
-console.log(`| 開いた画面の数（中央値） | ${out.modalMedian === null ? '—' : out.modalMedian} |`);
+console.log(`| 水やりがあった日 | ${out.keptDays.distinctDays}日（最後は ${out.keptDays.lastDay || '—'}） |`);
+console.log(`| 最終日に水をやった人 | ${out.keptDays.onLastDay}人 |`);
+console.log(`| 3日以上やった人 | ${out.keptDays.threePlus}人 |`);
+console.log(`| 1人の最多日数 | ${out.keptDays.maxDays}日 |`);
 console.log('');
+console.log(`## 初見の速さ（その人の最初のセッションだけ）\n`);
+console.log(`| 指標 | 値 |`);
+console.log(`|---|---|`);
+console.log(`| 水やりを押した人 | ${out.firstPress.n}人 |`);
+console.log(`| 押すまで（中央値） | ${out.firstPress.medianSec === null ? '—' : out.firstPress.medianSec + '秒'} |`);
+console.log(`| 最短 / 最長 | ${out.firstPress.minSec === null ? '—' : out.firstPress.minSec + '秒'} / ${out.firstPress.maxSec === null ? '—' : out.firstPress.maxSec + '秒'} |`);
+console.log(`| 10秒を超えた人 | ${out.firstPress.over10s}人 |`);
+console.log(`| 開いた画面の数（中央値・全セッション） | ${out.modalMedian === null ? '—' : out.modalMedian} |`);
+console.log('');
+console.log(`<!-- 参考: 再訪を含む全セッションの中央値 ${out.pressMedianSec === null ? '—' : out.pressMedianSec + '秒'}（最長 ${out.pressMaxSec}秒）。初見の数字としては使わない -->`);
 console.log(`## そのまま使える文\n`);
-console.log(`> ${sum}で、家族を作った人のうち${r.water.n}人が水をやった。`);console.log(`> 最初の水やりまで中央値${sec(out.pressMedianSec === null ? null : out.pressMedianSec * 1000)}秒、10秒を超えたのは${out.pressOver10s}人。`);
-console.log(`> 何かを飾ったのは${r.decorate.n}人、うち写真は${r.photo.n}人。誰かに送ったのは${r.send.n}人。`);
+console.log(`> ${sum}で、家族を作った人のうち${r.water.n}人が水をやった。最初の水やりまで中央値${out.firstPress.medianSec === null ? '—' : out.firstPress.medianSec + '秒'}。`);
+console.log(`> 水やりがあったのは${out.keptDays.distinctDays}日（${out.keptDays.lastDay}が最後）で、最終日にも${out.keptDays.onLastDay}人がやっていた。`);
+console.log(`> 3日以上やった人が${out.keptDays.threePlus}人。何かを飾ったのは${r.decorate.n}人、誰かに送ったのは${r.send.n}人。`);
 console.log('');
 if (p < 10) {
   console.log(`※ n=${p}。割合は1人で${(100 / p).toFixed(1)}%動く。発表では実数（「${r.water.n}人が水をやった」）で書き、割合は補助にする。`);
