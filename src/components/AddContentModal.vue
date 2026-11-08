@@ -127,7 +127,9 @@ const handleSubmit = async () => {
       <div class="mt-3 px-3 py-2 rounded-2xl bg-amber-50 border border-amber-200/80 flex items-center gap-2 text-[11px] text-amber-900">
         <span class="text-xs">✨</span>
         <span class="font-medium">
-          Lv.{{ treeLevel }}：Lv.2で写真解放済み / <span class="text-amber-700">Lv.5で鳥の巣が解放！</span>
+          Lv.{{ treeLevel }}：Lv.2で写真解放済み /
+          <span v-if="treeLevel >= 5" class="text-emerald-700">鳥の巣が解放済み</span>
+          <span v-else class="text-amber-700">Lv.5で鳥の巣が解放！</span>
         </span>
       </div>
 

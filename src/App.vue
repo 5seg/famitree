@@ -132,6 +132,11 @@ const currentUser = computed(() => members.value.find((m) => m.isCurrentUser));
 
 const hasWateredToday = computed(() => currentUser.value?.wateredToday ?? false);
 
+// 家族全員が今日の水やりを済ませたか（鳥の巣に鳥が来る条件）
+const allWatered = computed(
+  () => members.value.length > 0 && members.value.every((m) => m.wateredToday)
+);
+
 const isAdmin = computed(() => currentUser.value?.isAdmin ?? false);
 
 // Handle Watering Action
@@ -303,6 +308,8 @@ const unwateredMembers = computed(() =>
         <!-- Centerpiece: Interactive Tree Canvas -->
         <InteractiveTreeCanvas
           :tree-state="treeState"
+          :tree-level="treeLevel"
+          :all-watered="allWatered"
           :artifacts="artifacts"
           :is-watering-animation="isWateringAnimation"
           @select-artifact="(art) => (selectedArtifact = art)"

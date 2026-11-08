@@ -7,6 +7,8 @@ const props = defineProps<{
   treeState: TreeState;
   artifacts: TreeArtifact[];
   isWateringAnimation: boolean;
+  treeLevel: number;
+  allWatered: boolean;
 }>();
 
 defineEmits<{
@@ -45,6 +47,10 @@ const stateThemes = {
 };
 
 const currentTheme = computed(() => stateThemes[props.treeState]);
+
+// Lv.5 で解放される鳥の巣。右の枝先に引っかける
+const NEST = { x: 218, y: 118 };
+const hasNest = computed(() => props.treeLevel >= 5);
 
 // 手で置いた吊り下げ位置（キャンバス 340px に対する %）。
 // 行・列で並べるとグリッドに見えるので、枝に沿って少し重なる程度に散らしてある。
@@ -229,7 +235,58 @@ const placedArtifacts = computed<PlacedArtifact[]>(() => {
           <circle cx="165" cy="65" r="5.5" fill="#f43f5e" />
           <circle cx="185" cy="135" r="4.5" fill="#f43f5e" />
         </g>
+
+        <!-- 鳥の巣（Lv.5で解放。家族全員が水やり済みの日は鳥が来る） -->
+        <g
+          v-if="hasNest"
+          :transform="`translate(${NEST.x} ${NEST.y}) rotate(-4)`"
+          filter="url(#gentleShadowVue)"
+        >
+          <!-- はみ出した小枝 -->
+          <path
+            d="M -20 -2 L -27 -9 M 20 -2 L 27 -8 M -8 -4 L -11 -11 M 9 -4 L 12 -10"
+            stroke="#92400e"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            fill="none"
+          />
+          <!-- 編んだ椀 -->
+          <path d="M -25 0 Q -23 19 0 20 Q 23 19 25 0 Z" fill="#b45309" stroke="#78350f" stroke-width="1.5" />
+          <path
+            d="M -22 5 L 20 9 M -20 11 L 18 14 M -15 2 L -11 8 M 5 3 L 10 10 M -7 3 L -3 10"
+            stroke="#78350f"
+            stroke-width="1.2"
+            stroke-linecap="round"
+            fill="none"
+            opacity="0.5"
+          />
+          <!-- くぼみ -->
+          <ellipse cx="0" cy="0" rx="25" ry="7" fill="#78350f" />
+          <ellipse cx="0" cy="1" rx="18" ry="4.5" fill="#5c2e0b" opacity="0.9" />
+          <!-- 縁の編み目とはみ出した枯れ草 -->
+          <ellipse cx="0" cy="0" rx="25" ry="7" fill="none" stroke="#d97706" stroke-width="1.6" opacity="0.45" />
+          <path
+            d="M -20 4 Q -15 -1 -10 6 M -5 6 Q 0 1 5 7 M 11 5 Q 16 0 20 6"
+            stroke="#d97706"
+            stroke-width="1.3"
+            stroke-linecap="round"
+            fill="none"
+            opacity="0.85"
+          />
+        </g>
       </svg>
+
+      <!-- 家族全員が本日の水やりを済ませた日は巣に鳥が来る -->
+      <span
+        v-if="hasNest && allWatered"
+        class="absolute z-10 text-xl leading-none pointer-events-none animate-bounce"
+        :style="{
+          left: `${(NEST.x / 340) * 100}%`,
+          top: `${((NEST.y - 9) / 340) * 100}%`,
+          translate: '-50% -50%',
+          'animation-duration': '3s',
+        }"
+      >🐦</span>
 
       <!-- Hanging Artifacts -->
       <div class="absolute inset-0 pointer-events-auto">
