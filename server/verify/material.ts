@@ -84,15 +84,16 @@ const photographers = new Set(artifacts.filter((a) => a.type === 'photo').map((a
 
 // ---- 初見の速さ（イベントから） ----
 const bySession = new Map<string, { press?: number; modals: number; ended: boolean }>();
-// 初見 = その人の最初のセッションでの水やり押下。再訪日の値は混ぜない。
-const firstPressByUser = new Map<string, number>();
-const seenUsers = new Set<string>();
+// 初見 = その人の最初のセッションでの水やり押下。client_ms はセッション開始からの経過なので、
+// 後日のセッションの値は初見の数字にならない（昔の実装がこれを混ぜていた）。
+const firstSession = new Map<string, string>();
+const firstSitePress = new Map<string, number>();
 for (const e of ev) {
-  if (!seenUsers.has(e.user_id)) {
-    seenUsers.add(e.user_id);
-    if (e.kind !== 'water_press') firstPressByUser.set(e.user_id, -1); // 最初のセッションでは押していない
+  if (!firstSession.has(e.user_id)) firstSession.set(e.user_id, e.session_id);
+  if (e.kind === 'water_press' && e.session_id === firstSession.get(e.user_id)) {
+    firstSitePress.set(e.user_id, Math.min(firstSitePress.get(e.user_id) ?? Infinity, e.client_ms));
   }
-  if (e.kind === 'water_press' && firstPressByUser.get(e.user_id) === -1) firstPressByUser.set(e.user_id, e.client_ms);
+}
   const s = bySession.get(e.session_id) ?? { modals: 0, ended: false };
   if (e.kind === 'water_press' && s.press === undefined) s.press = e.client_ms;
   if (e.kind === 'modal_open') s.modals++;
@@ -101,7 +102,7 @@ for (const e of ev) {
 }
 const sessions = [...bySession.values()];
 const presses = sessions.map((s) => s.press).filter((x): x is number => typeof x === 'number');
-const firstPresses = [...firstPressByUser.values()].filter((x) => x >= 0);
+const firstPresses = [...firstSitePress.values()].filter((x) => Number.isFinite(x));
 
 // ---- 何日続けたか（人単位） ----
 const daysByUser = new Map<string, Set<string>>();
@@ -160,6 +161,7 @@ const out = {
   // 初見の速さ（その人の最初のセッションのみ）
   firstPress: {
     n: firstPresses.length,
+    sessionsOfFirstVisit: firstSession.size,
     medianSec: firstPresses.length ? Math.round((median(firstPresses) as number) / 100) / 10 : null,
     minSec: firstPresses.length ? Math.round(Math.min(...firstPresses) / 100) / 10 : null,
     maxSec: firstPresses.length ? Math.round(Math.max(...firstPresses) / 100) / 10 : null,
@@ -228,7 +230,7 @@ console.log('');
 console.log(`## 初見の速さ（その人の最初のセッションだけ）\n`);
 console.log(`| 指標 | 値 |`);
 console.log(`|---|---|`);
-console.log(`| 水やりを押した人 | ${out.firstPress.n}人 |`);
+console.log(`| 水やりを押した人（初回訪問で） | ${out.firstPress.n}人 / 初回訪問者${out.firstPress.sessionsOfFirstVisit}人 |`);
 console.log(`| 押すまで（中央値） | ${out.firstPress.medianSec === null ? '—' : out.firstPress.medianSec + '秒'} |`);
 console.log(`| 最短 / 最長 | ${out.firstPress.minSec === null ? '—' : out.firstPress.minSec + '秒'} / ${out.firstPress.maxSec === null ? '—' : out.firstPress.maxSec + '秒'} |`);
 console.log(`| 10秒を超えた人 | ${out.firstPress.over10s}人 |`);
