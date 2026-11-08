@@ -173,6 +173,11 @@ const out = {
     maxSec: firstPresses.length ? Math.round(Math.max(...firstPresses) / 100) / 10 : null,
     over30s: firstPresses.filter((p) => p > 30_000).length,
     over5min: firstPresses.filter((p) => p > 300_000).length,
+    // 開いたまま放置した値を除いた中央値（発表で使うのはこちら）
+    medianSecUnder5min: firstPresses.filter((p) => p <= 300_000).length
+      ? Math.round((median(firstPresses.filter((p) => p <= 300_000)) as number) / 100) / 10
+      : null,
+    valuesSec: [...firstPresses].sort((a, b) => a - b).map((p) => Math.round(p / 100) / 10),
   },
   revisit: {
     n: revisitPresses.length,
@@ -244,7 +249,7 @@ console.log(`## 押すまでの時間（セッション開始からの経過）\
 console.log(`| 指標 | 値 |`);
 console.log(`|---|---|`);
 console.log(`| 初見（その人の最初の水やり） | ${out.firstPress.n}人・中央値 ${out.firstPress.medianSec ?? '—'}秒（${out.firstPress.minSec ?? '—'}〜${out.firstPress.maxSec ?? '—'}秒） |`);
-console.log(`| 初見で30秒を超えた人 | ${out.firstPress.over30s}人（うち5分超＝開いたまま放置 ${out.firstPress.over5min}人） |`);
+console.log(`| 初見（5分超を除く） | 中央値 ${out.firstPress.medianSecUnder5min ?? '—'}秒・値を小さい順に ${out.firstPress.valuesSec.join(', ')} |`);
 console.log(`| 2回目以降 | ${out.revisit.n}回・中央値 ${out.revisit.medianSec ?? '—'}秒（${out.revisit.minSec ?? '—'}〜${out.revisit.maxSec ?? '—'}秒） |`);
 console.log(`| 開いた画面の数（中央値・全セッション） | ${out.modalMedian === null ? '—' : out.modalMedian} |`);
 console.log('');
