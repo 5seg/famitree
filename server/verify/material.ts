@@ -89,11 +89,14 @@ const bySession = new Map<string, { press?: number; modals: number; ended: boole
 // 参加フォームだけのセッション（押していない）も初見の分母にしない。
 const pressSessionOfUser = new Map<string, string>();
 const firstSitePress = new Map<string, number>();
+const revisitPresses: number[] = [];
 for (const e of ev) {
   if (e.kind !== 'water_press') continue;
   if (!pressSessionOfUser.has(e.user_id)) pressSessionOfUser.set(e.user_id, e.session_id);
   if (e.session_id === pressSessionOfUser.get(e.user_id)) {
     firstSitePress.set(e.user_id, Math.min(firstSitePress.get(e.user_id) ?? Infinity, e.client_ms));
+  } else {
+    revisitPresses.push(e.client_ms);
   }
 }
 for (const e of ev) {
@@ -168,7 +171,14 @@ const out = {
     medianSec: firstPresses.length ? Math.round((median(firstPresses) as number) / 100) / 10 : null,
     minSec: firstPresses.length ? Math.round(Math.min(...firstPresses) / 100) / 10 : null,
     maxSec: firstPresses.length ? Math.round(Math.max(...firstPresses) / 100) / 10 : null,
-    over10s: firstPresses.filter((p) => p > 10_000).length,
+    over30s: firstPresses.filter((p) => p > 30_000).length,
+    over5min: firstPresses.filter((p) => p > 300_000).length,
+  },
+  revisit: {
+    n: revisitPresses.length,
+    medianSec: revisitPresses.length ? Math.round((median(revisitPresses) as number) / 100) / 10 : null,
+    minSec: revisitPresses.length ? Math.round(Math.min(...revisitPresses) / 100) / 10 : null,
+    maxSec: revisitPresses.length ? Math.round(Math.max(...revisitPresses) / 100) / 10 : null,
   },
   // 何日続けたか
   keptDays: {
@@ -230,18 +240,17 @@ console.log(`| 最終日に水をやった人 | ${out.keptDays.onLastDay}人 |`)
 console.log(`| 3日以上やった人 | ${out.keptDays.threePlus}人 |`);
 console.log(`| 1人の最多日数 | ${out.keptDays.maxDays}日 |`);
 console.log('');
-console.log(`## 初見の速さ（その人の最初のセッションだけ）\n`);
+console.log(`## 押すまでの時間（セッション開始からの経過）\n`);
 console.log(`| 指標 | 値 |`);
 console.log(`|---|---|`);
-console.log(`| 水やりを押した人（押した最初のセッション） | ${out.firstPress.n}人 |`);
-console.log(`| 押すまで（中央値） | ${out.firstPress.medianSec === null ? '—' : out.firstPress.medianSec + '秒'} |`);
-console.log(`| 最短 / 最長 | ${out.firstPress.minSec === null ? '—' : out.firstPress.minSec + '秒'} / ${out.firstPress.maxSec === null ? '—' : out.firstPress.maxSec + '秒'} |`);
-console.log(`| 10秒を超えた人 | ${out.firstPress.over10s}人 |`);
+console.log(`| 初見（その人の最初の水やり） | ${out.firstPress.n}人・中央値 ${out.firstPress.medianSec ?? '—'}秒（${out.firstPress.minSec ?? '—'}〜${out.firstPress.maxSec ?? '—'}秒） |`);
+console.log(`| 初見で30秒を超えた人 | ${out.firstPress.over30s}人（うち5分超＝開いたまま放置 ${out.firstPress.over5min}人） |`);
+console.log(`| 2回目以降 | ${out.revisit.n}回・中央値 ${out.revisit.medianSec ?? '—'}秒（${out.revisit.minSec ?? '—'}〜${out.revisit.maxSec ?? '—'}秒） |`);
 console.log(`| 開いた画面の数（中央値・全セッション） | ${out.modalMedian === null ? '—' : out.modalMedian} |`);
 console.log('');
 console.log(`<!-- 参考: 再訪を含む全セッションの中央値 ${out.pressMedianSec === null ? '—' : out.pressMedianSec + '秒'}（最長 ${out.pressMaxSec}秒）。初見の数字としては使わない -->`);
 console.log(`## そのまま使える文\n`);
-console.log(`> ${sum}で、家族を作った人のうち${r.water.n}人が水をやった。最初の水やりまで中央値${out.firstPress.medianSec === null ? '—' : out.firstPress.medianSec + '秒'}。`);
+console.log(`> ${sum}で、家族を作った人のうち${r.water.n}人が水をやった。初見で押すまで中央値${out.firstPress.medianSec ?? '—'}秒、2回目からは${out.revisit.medianSec ?? '—'}秒。`);
 console.log(`> 水やりがあったのは${out.keptDays.distinctDays}日（${out.keptDays.lastDay}が最後）で、最終日にも${out.keptDays.onLastDay}人がやっていた。`);
 console.log(`> 3日以上やった人が${out.keptDays.threePlus}人。何かを飾ったのは${r.decorate.n}人、誰かに送ったのは${r.send.n}人。`);
 console.log('');
