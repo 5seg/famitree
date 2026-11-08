@@ -464,13 +464,16 @@ const createFamily = db.transaction((body: any) => {
 
 const water = db.transaction((me: User) => {
   const today = jstDate();
-  if (!q.insertWatering.run(crypto.randomUUID(), me.id, me.family_id, today).changes) return;
+  if (!q.insertWatering.run(crypto.randomUUID(), me.id, me.family_id, today).changes) return null;
   q.touchUser.run(me.id);
   const f = q.family.get(me.family_id)!;
   // 連続日数は、その日の水やりが全員そろったときだけ進む
   const streak = familyStreak(me.family_id, today);
   const exp = f.exp + 30;
-  q.updateTree.run(f.tree_level + Math.floor(exp / 100), exp % 100, 'thriving', streak, f.id);
+  const level = f.tree_level + Math.floor(exp / 100);
+  q.updateTree.run(level, exp % 100, 'thriving', streak, f.id);
+  // レベルが上がったときだけ新しいレベルを返す（1回の水やりで二段階は上がらない）
+  return level > f.tree_level ? level : null;
 });
 
 function randomCoords() {
@@ -586,6 +589,21 @@ async function sendPush(userId: string, payload: { title: string; body: string }
           else console.error('push failed', e.statusCode ?? e, e.body ?? '');
         });
     }),
+  );
+}
+
+// 木のレベルが上がったときだけ、水やりした本人以外の家族に知らせる（本人はその場で演出を見ている）
+async function notifyLevelUp(me: User, level: number) {
+  await Promise.all(
+    q.members
+      .all(me.family_id)
+      .filter((u) => u.id !== me.id)
+      .map((u) =>
+        sendPush(u.id, {
+          title: `🌳 木がレベル${level}に育ちました`,
+          body: `${me.avatar} ${me.name}さんの水やりで、家族の木が大きくなりました`,
+        }),
+      ),
   );
 }
 
@@ -757,7 +775,9 @@ async function route(req: Request): Promise<Response> {
       return Response.json(state(auth(req)));
     case 'POST /api/water': {
       const me = auth(req);
-      water(me);
+      const levelUp = water(me);
+      // 通知の完了で水やりの応答を待たせない（届かなくても水やり自体は成立している）
+      if (levelUp) void notifyLevelUp(me, levelUp);
       return Response.json(state(me));
     }
     case 'POST /api/artifacts': {

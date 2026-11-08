@@ -166,9 +166,14 @@ const handleSubmit = async () => {
           </label>
 
           <!-- Caption input -->
-          <label class="block text-xs font-semibold text-stone-700 mb-1">
-            写真のタイトル・一言:
-          </label>
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-xs font-semibold text-stone-700">
+              写真のタイトル・一言（最大24文字）:
+            </label>
+            <span class="text-[10px] font-mono" :class="caption.length >= 24 ? 'text-rose-500 font-bold' : 'text-stone-500'">
+              {{ caption.length }}/24
+            </span>
+          </div>
           <input
             type="text"
             v-model="caption"

@@ -41,7 +41,7 @@ defineEmits<{
             <div
               class="absolute -bottom-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-[10px] shadow-sm border border-white"
               :class="member.wateredToday ? 'bg-emerald-500 text-white' : 'bg-stone-200 text-stone-500'"
-              :title="member.wateredToday ? '水やり完了' : 'まだ'"
+              :title="member.wateredToday ? '水やり完了' : 'これから'"
             >
               <Droplets v-if="member.wateredToday" class="w-3 h-3 fill-white" />
               <Clock v-else class="w-2.5 h-2.5" />
@@ -63,7 +63,7 @@ defineEmits<{
             class="mt-1 text-[9px] px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap"
             :class="member.wateredToday ? 'bg-emerald-100/90 text-emerald-800' : 'bg-stone-100 text-stone-600'"
           >
-            {{ member.wateredToday ? '💧 水やり完了' : '⏳ まだ' }}
+            {{ member.wateredToday ? '💧 水やり完了' : '⏳ これから' }}
           </span>
         </button>
       </div>
