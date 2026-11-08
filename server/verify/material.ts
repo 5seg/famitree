@@ -93,7 +93,6 @@ for (const e of ev) {
   if (e.kind === 'water_press' && e.session_id === firstSession.get(e.user_id)) {
     firstSitePress.set(e.user_id, Math.min(firstSitePress.get(e.user_id) ?? Infinity, e.client_ms));
   }
-}
   const s = bySession.get(e.session_id) ?? { modals: 0, ended: false };
   if (e.kind === 'water_press' && s.press === undefined) s.press = e.client_ms;
   if (e.kind === 'modal_open') s.modals++;
