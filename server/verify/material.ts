@@ -163,6 +163,9 @@ const out = {
     .sort((a, b) => Number(a[0]) - Number(b[0]))
     .map(([d, n]) => `${d}日:${n}世帯`)
     .join(', '),
+  // 「だれかが押した日」の連続（streak_days）と「全員そろった日」の連続（full_streak_days）
+  streakAny: streaks.length ? Math.max(...streaks.map((s) => s.streak_days)) : 0,
+  streakFull: streaks.length ? Math.max(...streaks.map((s) => s.full_streak_days)) : 0,
   sessions: sessions.length,
   // 初見の速さ（その人の最初のセッションのみ）
   firstPress: {
@@ -235,7 +238,9 @@ console.log(`| 水やり | ${out.waterings}件 |`);
 console.log(`| 飾り | ${out.artifacts}件（うち写真${out.photos}） |`);
 console.log(`| エール | ${out.nudges}件 |`);
 console.log(`| 枯れ→復帰 | ${out.returns}回 |`);
-console.log(`| 連続日数 | ${out.streakMix || '—'} |`);
+console.log(`| 連続日数（だれかが押した日） | ${out.streakAny}日 |`);
+console.log(`| 連続日数（全員そろった日） | ${out.streakFull}日 |`);
+console.log(`| 連続日数の分布 | ${out.streakMix || '—'} |`);
 console.log('');
 console.log(`## 続けた日数\n`);
 console.log(`| 指標 | 値 |`);

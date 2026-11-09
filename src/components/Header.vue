@@ -6,6 +6,8 @@ defineProps<{
   familyName: string;
   memberCount: number;
   streak: number;
+  // その日に在籍していた全員がそろった日の連続（streak と別の数字）
+  fullStreak: number;
   treeLevel: number;
   expPercent: number;
 }>();
@@ -113,7 +115,10 @@ const chooseLeaveFamily = () => {
         class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-orange-50 border border-orange-200 text-orange-700 shadow-xs text-xs font-semibold animate-pulse"
       >
         <Flame class="w-3.5 h-3.5 text-orange-500 fill-orange-500" />
-        <span>{{ streak }}日連続</span>
+        <span class="flex flex-col leading-none">
+          <span>{{ streak }}日連続</span>
+          <span class="text-[9px] font-normal text-orange-600/70 mt-0.5">全員そろい {{ fullStreak }}日</span>
+        </span>
       </div>
 
       <!-- Tree Level & Exp Badge -->

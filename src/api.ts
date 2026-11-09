@@ -15,6 +15,8 @@ export interface AppState {
     exp: number; // 0-99
     treeState: TreeState;
     streak: number;
+    // 「その日に在籍していた全員がそろった日」の連続。人数が多い家族では伸びないので streak と別に持つ
+    fullStreak: number;
     hasRecoveryKey?: boolean;
   };
   // 自分の状態。復旧コードを発行済みかどうかを設定画面で出すために使う

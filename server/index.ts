@@ -153,6 +153,10 @@ db.run('CREATE UNIQUE INDEX IF NOT EXISTS users_recovery_hash ON users (recovery
 const familyCols = db.query<{ name: string }, []>('PRAGMA table_info(families)').all().map((c) => c.name);
 if (!familyCols.includes('recovery_hash')) db.run('ALTER TABLE families ADD COLUMN recovery_hash TEXT');
 if (!familyCols.includes('recovery_issued_at')) db.run('ALTER TABLE families ADD COLUMN recovery_issued_at DATETIME');
+// 連続日の2つ目の数字。streak_days は「その日にだれかが水をやった日」の連続、
+// full_streak_days は「その日に在籍していた全員がそろった日」の連続。
+// 人数が多い家族では後者が伸びないので、両方を持つ
+if (!familyCols.includes('full_streak_days')) db.run('ALTER TABLE families ADD COLUMN full_streak_days INTEGER DEFAULT 0');
 db.run('CREATE UNIQUE INDEX IF NOT EXISTS families_recovery_hash ON families (recovery_hash)');
 // 管理者がいない家族（既存データ）は、最初のメンバーを管理者にする
 db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
@@ -164,7 +168,7 @@ db.run(`UPDATE users SET is_admin = 1 WHERE removed_at IS NULL AND rowid IN (
 
 type User = { id: string; family_id: string; name: string; role: string; avatar: string; is_admin: number; recovery_issued_at?: string | null };
 type AuthUser = User & { token_expires_at: string | null };
-type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; exp: number; invite_code: string; recovery_issued_at?: string | null };
+type Family = { id: string; name: string; tree_level: number; tree_status: string; streak_days: number; full_streak_days: number; exp: number; invite_code: string; recovery_issued_at?: string | null };
 type ArtifactRow = {
   id: string;
   type: string;
@@ -252,23 +256,36 @@ function streakOf(datesDesc: string[], today: string): number {
   return n;
 }
 
-// 家族の連続日数は「その日に在籍していた全員が水やりした日」が連続した数。
-// 今日がまだ全員そろっていなくても、その日は未確定なので昨日までの記録を保つ。
+// 家族の連続日数は2つ持つ。
+//  - any:  その日にだれか1人でも水をやった日が連続した数
+//  - full: その日に在籍していた全員がそろった日が連続した数
+// 人数の多い家族では full が伸びない（実際の9人家族は毎日だれかが押しても full は0）。
+// だから片方だけでなく両方を出す。今日がまだ未完了なだけなら、その日は未確定として昨日までの記録を保つ。
 // ponytail: 日ごとに1件ずつ遡って数える。家族は小さいので十分。長寿家族が増えたら SQL の再帰でまとめる
-function familyStreak(familyId: string, today: string): number {
+function familyStreak(familyId: string, today: string): { any: number; full: number } {
   const watered = new Map(q.dailyWaterers.all(familyId).map((r) => [r.d, r.n]));
-  if (!watered.size) return 0;
+  if (!watered.size) return { any: 0, full: 0 };
   const spans = q.memberSpans.all(familyId);
   const required = (d: string) => spans.filter((s) => s.joined <= d && (!s.left || s.left > d)).length;
-  let streak = 0;
-  for (let i = 0; ; i++) {
+  let any = 0;
+  let full = 0;
+  let anyDone = false;
+  let fullDone = false;
+  for (let i = 0; !anyDone || !fullDone; i++) {
     const d = jstDate(Date.now() - i * DAY_MS);
     const need = required(d);
     if (!need) break; // その日はまだメンバーがいない
-    if ((watered.get(d) ?? 0) >= need) streak++;
-    else if (i > 0) break; // 今日が未完了なだけなら、昨日までの連続を見せる
+    const got = watered.get(d) ?? 0;
+    if (!anyDone) {
+      if (got >= 1) any++;
+      else if (i > 0) anyDone = true; // 今日がゼロなだけなら、昨日までの連続を見せる
+    }
+    if (!fullDone) {
+      if (got >= need) full++;
+      else if (i > 0) fullDone = true;
+    }
   }
-  return streak;
+  return { any, full };
 }
 
 // 最終水やりからの経過日数で決まる状態。誰かが水やりすれば冬眠から即復活する
@@ -331,7 +348,7 @@ const q = {
   insertWatering: db.query('INSERT OR IGNORE INTO watering_logs (id, user_id, family_id, watered_date) VALUES (?, ?, ?, ?)'),
   touchUser: db.query('UPDATE users SET last_watered_at = CURRENT_TIMESTAMP WHERE id = ?'),
   extendToken: db.query(`UPDATE users SET token_expires_at = datetime('now', '+${TOKEN_TTL_DAYS} days') WHERE id = ?`),
-  updateTree: db.query('UPDATE families SET tree_level = ?, exp = ?, tree_status = ?, streak_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
+  updateTree: db.query('UPDATE families SET tree_level = ?, exp = ?, tree_status = ?, streak_days = ?, full_streak_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
   insertArtifact: db.query('INSERT INTO artifacts (id, family_id, user_id, type, title, content, x, y, rotate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   upsertSub: db.query(`INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth) VALUES (?, ?, ?, ?)
     ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`),
@@ -354,10 +371,10 @@ const q = {
 function refreshTree(familyId: string, today: string): Family {
   const f = q.family.get(familyId)!;
   const status = treeStatus(q.lastFamilyDate.get(familyId)!.d, today);
-  const streak = familyStreak(familyId, today);
-  if (status !== f.tree_status || streak !== f.streak_days) {
-    q.updateTree.run(f.tree_level, f.exp, status, streak, f.id);
-    return { ...f, tree_status: status, streak_days: streak };
+  const { any, full } = familyStreak(familyId, today);
+  if (status !== f.tree_status || any !== f.streak_days || full !== f.full_streak_days) {
+    q.updateTree.run(f.tree_level, f.exp, status, any, full, f.id);
+    return { ...f, tree_status: status, streak_days: any, full_streak_days: full };
   }
   return f;
 }
@@ -429,6 +446,7 @@ function state(me: User & { recovery_issued_at?: string | null }) {
       exp: family.exp,
       treeState: family.tree_status,
       streak: family.streak_days,
+      fullStreak: family.full_streak_days,
       hasRecoveryKey: !!family.recovery_issued_at,
     },
     me: { id: me.id, name: me.name, isAdmin: !!me.is_admin, hasRecovery: !!me.recovery_issued_at },
@@ -467,11 +485,11 @@ const water = db.transaction((me: User) => {
   if (!q.insertWatering.run(crypto.randomUUID(), me.id, me.family_id, today).changes) return null;
   q.touchUser.run(me.id);
   const f = q.family.get(me.family_id)!;
-  // 連続日数は、その日の水やりが全員そろったときだけ進む
-  const streak = familyStreak(me.family_id, today);
+  // 連続日数は2つ。any は「だれかが押した日」、full は「全員そろった日」
+  const { any: streak, full: fullStreak } = familyStreak(me.family_id, today);
   const exp = f.exp + 30;
   const level = f.tree_level + Math.floor(exp / 100);
-  q.updateTree.run(level, exp % 100, 'thriving', streak, f.id);
+  q.updateTree.run(level, exp % 100, 'thriving', streak, fullStreak, f.id);
   // レベルが上がったときだけ新しいレベルを返す（1回の水やりで二段階は上がらない）
   return level > f.tree_level ? level : null;
 });
