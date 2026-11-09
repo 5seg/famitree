@@ -60,8 +60,8 @@ const nudges = many<{ from_user: string; family_id: string; kind: string }>(
   `${since} 00:00:00`,
   `${to} 23:59:59`
 );
-const streaks = many<{ streak_days: number; tree_status: string }>(
-  `WITH fam AS (${FAM}) SELECT f.streak_days, f.tree_status FROM families f JOIN fam ON fam.id = f.id`,
+const streaks = many<{ full_streak_days: number; streak_days: number; tree_status: string }>(
+  `WITH fam AS (${FAM}) SELECT f.streak_days, f.full_streak_days, f.tree_status FROM families f JOIN fam ON fam.id = f.id`,
   `${since} 00:00:00`,
   `${to} 23:59:59`
 );
@@ -130,6 +130,50 @@ for (let i = 1; i < waterRows.length; i++) {
   if (d >= 4) returns++;
 }
 
+// 連続日数はサーバと同じ定義でここでも計算する（誰かがアプリを開くまで DB の保存値は古いままなので、レポートは自分で数える）。
+//  - any:  その日にだれか1人でも水をやった日が連続した数
+//  - full: その日に在籍していた全員がそろった日が連続した数
+const dayCount = new Map<string, Map<string, number>>();
+for (const w of waterRows) {
+  const per = dayCount.get(w.family_id) ?? new Map<string, number>();
+  per.set(w.watered_date, (per.get(w.watered_date) ?? 0) + 1);
+  dayCount.set(w.family_id, per);
+}
+const joinDate = new Map<string, string[]>();
+for (const p of people) {
+  const days = joinDate.get(p.family_id) ?? [];
+  days.push(p.created_at.slice(0, 10));
+  joinDate.set(p.family_id, days);
+}
+const dayShift = (from: string, i: number) => new Date(Date.parse(`${from}T00:00:00Z`) - i * day).toISOString().slice(0, 10);
+function streakOf(familyId: string) {
+  const per = dayCount.get(familyId) ?? new Map<string, number>();
+  const joined = joinDate.get(familyId) ?? [];
+  let any = 0;
+  let full = 0;
+  let anyDone = false;
+  let fullDone = false;
+  for (let i = 0; !anyDone || !fullDone; i++) {
+    if (i > 400) break; // 念のための上限（家族の寿命より十分大きい）
+    const d = dayShift(to, i);
+    const need = joined.filter((j) => j <= d).length;
+    if (!need) break;
+    const got = per.get(d) ?? 0;
+    if (!anyDone) {
+      if (got >= 1) any++;
+      else if (i > 0) anyDone = true;
+    }
+    if (!fullDone) {
+      if (got >= need) full++;
+      else if (i > 0) fullDone = true;
+    }
+  }
+  return { any, full };
+}
+const streakPerFamily = families.map((id) => streakOf(id));
+const streakAny = streakPerFamily.length ? Math.max(...streakPerFamily.map((s) => s.any)) : 0;
+const streakFull = streakPerFamily.length ? Math.max(...streakPerFamily.map((s) => s.full)) : 0;
+
 const median = (xs: number[]) => {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -158,14 +202,13 @@ const out = {
   nudges: nudges.length,
   returns,
   streakMix: Object.entries(
-    streaks.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.streak_days]: (acc[s.streak_days] ?? 0) + 1 }), {})
+    streaks.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.tree_status]: (acc[s.tree_status] ?? 0) + 1 }), {})
   )
-    .sort((a, b) => Number(a[0]) - Number(b[0]))
-    .map(([d, n]) => `${d}日:${n}世帯`)
+    .map(([k, n]) => `${k}:${n}世帯`)
     .join(', '),
-  // 「だれかが押した日」の連続（streak_days）と「全員そろった日」の連続（full_streak_days）
-  streakAny: streaks.length ? Math.max(...streaks.map((s) => s.streak_days)) : 0,
-  streakFull: streaks.length ? Math.max(...streaks.map((s) => s.full_streak_days)) : 0,
+  // 「だれかが押した日」の連続と「全員そろった日」の連続（サーバと同じ定義で数え直す）
+  streakAny,
+  streakFull,
   sessions: sessions.length,
   // 初見の速さ（その人の最初のセッションのみ）
   firstPress: {
@@ -240,7 +283,7 @@ console.log(`| エール | ${out.nudges}件 |`);
 console.log(`| 枯れ→復帰 | ${out.returns}回 |`);
 console.log(`| 連続日数（だれかが押した日） | ${out.streakAny}日 |`);
 console.log(`| 連続日数（全員そろった日） | ${out.streakFull}日 |`);
-console.log(`| 連続日数の分布 | ${out.streakMix || '—'} |`);
+console.log(`| 木の状態 | ${out.streakMix || '—'} |`);
 console.log('');
 console.log(`## 続けた日数\n`);
 console.log(`| 指標 | 値 |`);
