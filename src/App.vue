@@ -31,8 +31,6 @@ const treeState = ref<TreeState>('growing');
 const treeLevel = ref<number>(1);
 const expPercent = ref<number>(0);
 const streak = ref<number>(0);
-// 「全員そろった日」の連続。streak（だれかが押した日）と並べて出す
-const fullStreak = ref<number>(0);
 // 自分の行（復旧コードの発行状態と、管理者かどうか）
 const me = ref<AppState['me'] | null>(null);
 const hasRecoveryKey = ref(false);
@@ -52,8 +50,6 @@ const applyState = (s: AppState) => {
   treeLevel.value = s.family.level;
   expPercent.value = s.family.exp;
   streak.value = s.family.streak;
-  // 旧 API は fullStreak を返さないので、無くても落とさない
-  fullStreak.value = s.family.fullStreak ?? 0;
   // 旧 API は me を返さないので、無くても落とさない
   me.value = s.me ?? null;
   hasRecoveryKey.value = s.family.hasRecoveryKey ?? false;
@@ -197,7 +193,6 @@ const handleToggleUserWatered = () => {
 
 const handleResetStreak = () => {
   streak.value = 1;
-  fullStreak.value = 1;
   showToast('連続日数を1日にリセットしました');
 };
 
@@ -295,7 +290,6 @@ const unwateredMembers = computed(() =>
         <!-- Header -->
         <Header
           :streak="streak"
-          :full-streak="fullStreak"
           :tree-level="treeLevel"
           :exp-percent="expPercent"
           :family-name="familyName"
